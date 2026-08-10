@@ -13,24 +13,21 @@ const Chat = () => {
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
   const [connected, setConnected] = useState(false);
-  // Ref to always have the latest activeConversation inside socket callbacks
   const activeConvRef = useRef(null);
 
   const { user, logout } = useAuth();
   const { isDarkMode } = useTheme();
   const navigate = useNavigate();
 
-  // Keep ref in sync with state
   useEffect(() => {
     activeConvRef.current = activeConversation;
   }, [activeConversation]);
 
-  // ── Load all conversations from REST API ──
+  // ── Load conversations ──
   const loadConversations = useCallback(async () => {
     try {
       const { data } = await api.get('/messages/conversations/all');
       setConversations(data);
-      // Auto-select first conversation on initial load
       if (data.length > 0 && !activeConvRef.current) {
         setActiveConversation(data[0]._id);
         activeConvRef.current = data[0]._id;
@@ -42,7 +39,9 @@ const Chat = () => {
     }
   }, []);
 
-  // ── Load messages for a conversation from REST API ──
+  // ── Load messages ──
+  // This replaces ALL messages with what's in the database
+  // We must NOT call this after every send - only on conversation switch
   const loadMessages = useCallback(async (conversationId) => {
     if (!conversationId) return;
     try {
@@ -65,9 +64,7 @@ const Chat = () => {
     socket.on('connect', () => setConnected(true));
     socket.on('disconnect', () => setConnected(false));
 
-    // Server tells us the default conversation ID
     socket.on('conversation_info', ({ conversationId }) => {
-      // Only auto-set if we don't already have an active conversation
       if (!activeConvRef.current) {
         setActiveConversation(conversationId);
         activeConvRef.current = conversationId;
@@ -75,28 +72,97 @@ const Chat = () => {
       }
     });
 
-    // Operator sends a reply
+    // ── Operator sends a reply ──
+    // FIX: Just append to existing messages, don't touch anything else
     socket.on('receive_message', (message) => {
-      // Only show if it belongs to the currently open conversation
       if (message.conversationId === activeConvRef.current) {
         setMessages(prev => [...prev, message]);
       }
-      loadConversations();
+      // Update sidebar last message (don't reload all messages)
+      setConversations(prev =>
+        prev.map(conv =>
+          conv._id === message.conversationId
+            ? { ...conv, lastMessage: message.content, lastMessageAt: message.timestamp }
+            : conv
+        )
+      );
     });
 
-    // Our message was saved - confirmation from server
-    socket.on('message_confirmed', (message) => {
-      if (message.conversationId === activeConvRef.current) {
-        setMessages(prev => [...prev, message]);
+    // ── Server confirmed our message saved ──
+    // FIX: Find the pending message by tempId and REPLACE it
+    socket.on('message_confirmed', (confirmedMessage) => {
+      if (confirmedMessage.conversationId === activeConvRef.current) {
+        setMessages(prev => {
+          // Check if we have a pending message with this tempId
+          const hasPending = prev.some(
+            msg => msg.tempId && msg.tempId === confirmedMessage.tempId
+          );
+
+          if (hasPending) {
+            // REPLACE the pending message with the confirmed one
+            return prev.map(msg =>
+              msg.tempId === confirmedMessage.tempId
+                ? {
+                    _id: confirmedMessage._id,
+                    conversationId: confirmedMessage.conversationId,
+                    sender: confirmedMessage.sender,
+                    senderName: confirmedMessage.senderName,
+                    content: confirmedMessage.content,
+                    status: confirmedMessage.status,
+                    timestamp: confirmedMessage.timestamp
+                  }
+                : msg
+            );
+          }
+
+          // No pending found (edge case) - check if already exists by _id
+          const alreadyExists = prev.some(
+            msg => msg._id === confirmedMessage._id
+          );
+          if (alreadyExists) return prev;
+
+          // Otherwise add it
+          return [...prev, confirmedMessage];
+        });
       }
-      loadConversations();
+
+      // Update sidebar
+      setConversations(prev =>
+        prev.map(conv =>
+          conv._id === confirmedMessage.conversationId
+            ? { ...conv, lastMessage: confirmedMessage.content, lastMessageAt: confirmedMessage.timestamp }
+            : conv
+        )
+      );
+    });
+
+    // ── Single message status update (sent → delivered) ──
+    socket.on('message_status_update', ({ messageId, status, deliveredAt }) => {
+      setMessages(prev =>
+        prev.map(msg =>
+          msg._id === messageId
+            ? { ...msg, status, deliveredAt }
+            : msg
+        )
+      );
+    });
+
+    // ── Multiple messages marked as read ──
+    socket.on('messages_read', ({ messageIds, readAt }) => {
+      setMessages(prev =>
+        prev.map(msg => {
+          const isInList = messageIds.some(
+            id => id.toString() === msg._id?.toString()
+          );
+          return isInList ? { ...msg, status: 'read', readAt } : msg;
+        })
+      );
     });
 
     socket.on('error_message', ({ message }) => {
       console.error('Socket error:', message);
     });
 
-    // Initial load
     loadConversations();
 
     return () => {
@@ -104,65 +170,76 @@ const Chat = () => {
     };
   }, [user, navigate, loadConversations, loadMessages]);
 
-  // ── Load messages when switching conversations ──
+  // ── Switch conversation: load messages from DB ──
   useEffect(() => {
     if (activeConversation) {
       loadMessages(activeConversation);
+      const socket = getSocket();
+      if (socket) {
+        socket.emit('switch_conversation', {
+          conversationId: activeConversation
+        });
+      }
     }
   }, [activeConversation, loadMessages]);
 
-  // ── Handle "Start New Chat" button ──
-  // WHY: Calls POST /api/messages/conversations/new → creates DB record → switches to it
+  // ── Send message ──
+  const handleSendMessage = (content) => {
+    const socket = getSocket();
+    if (!socket || !connected || !activeConvRef.current) return;
+
+    // Create unique temporary ID
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Step 1: Add pending message to UI immediately (optimistic update)
+    const pendingMessage = {
+      tempId,
+      conversationId: activeConvRef.current,
+      sender: 'user',
+      senderName: user.username,
+      content,
+      status: 'pending',
+      timestamp: new Date().toISOString()
+    };
+
+    setMessages(prev => [...prev, pendingMessage]);
+
+    // Step 2: Send to server with tempId
+    socket.emit('send_message', {
+      content,
+      conversationId: activeConvRef.current,
+      tempId
+    });
+  };
+
+  const handleTyping = () => {
+    const socket = getSocket();
+    if (socket && connected) socket.emit('typing');
+  };
+
   const handleNewChat = async () => {
     try {
       const { data } = await api.post('/messages/conversations/new');
-      // Add new conversation to top of list
       setConversations(prev => [data, ...prev]);
-      // Switch to the newly created conversation
       setActiveConversation(data._id);
-      // Clear messages since it's a fresh conversation
       setMessages([]);
     } catch (error) {
       console.error('Error creating new chat:', error);
     }
   };
 
-  // ── Send message via WebSocket ──
-  const handleSendMessage = (content) => {
-    const socket = getSocket();
-    if (socket && connected && activeConvRef.current) {
-      // Send with the active conversation ID so backend saves to correct conversation
-      socket.emit('send_message', {
-        content,
-        conversationId: activeConvRef.current
-      });
-    }
-  };
-
-  // ── Typing indicator ──
-  const handleTyping = () => {
-    const socket = getSocket();
-    if (socket && connected) {
-      socket.emit('typing');
-    }
-  };
-
-  // ── Select conversation from sidebar ──
   const handleSelectConversation = (conversationId) => {
     setActiveConversation(conversationId);
   };
 
-  // ── Logout ──
   const handleLogout = () => {
     disconnectSocket();
     logout();
     navigate('/login');
   };
 
-  // Find title of active conversation for header
-  const activeConvTitle = conversations.find(
-    c => c._id === activeConversation
-  )?.title || 'Support Chat';
+  const activeConvTitle =
+    conversations.find(c => c._id === activeConversation)?.title || 'Support Chat';
 
   return (
     <div className={`chat-container ${isDarkMode ? 'dark' : ''}`}>

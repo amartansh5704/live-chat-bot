@@ -818,3 +818,115 @@ body.dark-mode .logout-btn:hover {
     padding: 8px 4px;
   }
 }
+
+/* ========================================
+   MESSAGE STATUS TICKS
+   ======================================== */
+
+/* Footer row: time + tick side by side */
+.message-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.message-time {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.message-status {
+  display: flex;
+  align-items: center;
+}
+
+/* ── Base tick styles ── */
+.tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* ── Pending: clock icon - grey, pulsing ── */
+.tick-pending {
+  color: rgba(255, 255, 255, 0.6);
+  animation: pendingPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pendingPulse {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 1;   }
+}
+
+/* ── Sent: single grey tick ── */
+.tick-sent {
+  color: rgba(255, 255, 255, 0.7);
+  animation: tickAppear 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Delivered: double grey tick ── */
+.tick-delivered {
+  color: rgba(255, 255, 255, 0.7);
+  animation: tickAppear 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Read: double blue tick ── */
+.tick-read {
+  animation: tickAppear 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Blue color burst animation when turning read */
+.tick-read-svg {
+  animation: blueFlash 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes blueFlash {
+  0%   { filter: brightness(1);    transform: scale(1);    }
+  40%  { filter: brightness(1.8);  transform: scale(1.25); }
+  100% { filter: brightness(1);    transform: scale(1);    }
+}
+
+/* Pop in animation for any tick appearing */
+@keyframes tickAppear {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1);   }
+}
+
+/* ── Pending message bubble - slightly faded ── */
+.message-pending .message-bubble {
+  opacity: 0.75;
+  position: relative;
+}
+
+/* Shimmer on pending bubble */
+.message-pending .message-bubble::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.15) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+/* Dark mode adjustments for ticks */
+body.dark-mode .tick-sent,
+body.dark-mode .tick-delivered {
+  color: rgba(200, 200, 220, 0.6);
+}
+body.dark-mode .tick-read {
+  color: rgba(102, 126, 234, 0.8);
+}
