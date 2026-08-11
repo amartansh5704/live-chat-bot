@@ -10,7 +10,6 @@ const conversationSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  // WHY: Title lets users identify different conversations in the sidebar
   title: {
     type: String,
     default: 'Chat 1'
@@ -33,4 +32,5 @@ const conversationSchema = new mongoose.Schema({
   }
 });
 
-module.exports = mongoose.model('Conversation', conversationSchema);
+// THE FIX: reuse existing model if already compiled
+module.exports = mongoose.models.Conversation || mongoose.model('Conversation', conversationSchema);

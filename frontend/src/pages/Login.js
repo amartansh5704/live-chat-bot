@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import WebThreads from '../components/WebThreads';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -29,8 +30,36 @@ const Login = () => {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card">
+    <div className="auth-container-with-bg">
+      {/* ── ANIMATED BACKGROUND LAYER ── */}
+      <div className="webthreads-bg">
+        <WebThreads
+          color1="#5227FF"
+          color2="#FF9FFC"
+          color3="#FFFFFF"
+          speed={0.2}
+          threadCount={7}
+          frequency={5.0}
+          spread={0.22}
+          taper={1.0}
+          position={0.5}
+          fanMode="center"
+          glow={0.03}
+          falloff={0.6}
+          thickness={1.2}
+          brightness={0.7}
+          opacity={1.0}
+          mirror={true}
+          shimmer={true}
+          grain={true}
+          grainIntensity={0.04}
+          mouseInteraction={true}
+          mouseStrength={0.4}
+        />
+      </div>
+
+      {/* ── LOGIN CARD ON TOP ── */}
+      <div className="auth-card glass-card">
         <div className="auth-header">
           <h1>💬 Live Chat</h1>
           <p>Sign in to start chatting</p>

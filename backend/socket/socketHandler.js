@@ -2,328 +2,453 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
-const readline = require('readline');
-const {
-  markAsDelivered,
-  markConversationAsRead,
-} = require('./statusHandler');
+const { markAsDelivered, markConversationAsRead, deliverQueuedMessages } = require('./statusHandler');
 
-const connectedUsers = new Map();
-let operatorOnline = false;
+const connectedUsers = new Map();     // socketId → data
+const connectedOperators = new Map(); // socketId → data
+
+// ⭐ NEW: Track how many sockets each user has open
+// WHY: A user can have multiple tabs/windows open
+//      We only mark them offline when ALL tabs close
+const userSocketCount = new Map();    // userId → count
 
 const setupSocket = (io) => {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
 
-  operatorOnline = true;
+  const isAnyOperatorOnline = () => connectedOperators.size > 0;
 
-  console.log('\n╔══════════════════════════════════════════════════╗');
-  console.log('║           OPERATOR CONSOLE READY                 ║');
-  console.log('║  @username message  → Send reply                 ║');
-  console.log('║  /users             → See connected users        ║');
-  console.log('║  /read @username    → Mark messages as read      ║');
-  console.log('║  /read all          → Mark ALL as read           ║');
-  console.log('║  /history @username → See message history        ║');
-  console.log('║  /status @username  → See message statuses       ║');
-  console.log('╚══════════════════════════════════════════════════╝\n');
-
-  rl.on('line', async (input) => {
-    const trimmedInput = input.trim();
-    if (!trimmedInput) return;
-
-    if (trimmedInput === '/users') {
-      console.log('\n📋 Connected Users:');
-      if (connectedUsers.size === 0) {
-        console.log('   No users connected.');
+  const findUserSocket = (userId) => {
+    let found = null;
+    connectedUsers.forEach((data) => {
+      if (data.user._id.toString() === userId.toString()) {
+        found = data;
       }
-      connectedUsers.forEach((data) => {
-        console.log(`   👤 ${data.user.username}`);
-      });
-      console.log('');
-      return;
-    }
+    });
+    return found;
+  };
 
-    if (trimmedInput.startsWith('/read @')) {
-      const targetUsername = trimmedInput.replace('/read @', '').trim();
-      let targetSocketData = null;
-      connectedUsers.forEach((data) => {
-        if (data.user.username === targetUsername) {
-          targetSocketData = data;
-        }
-      });
-
-      if (!targetSocketData) {
-        const conv = await Conversation.findOne({ username: targetUsername });
-        if (conv) {
-          const count = await markConversationAsRead(conv._id, io, null);
-          console.log(`   ✅ Marked ${count} messages as read for @${targetUsername} (offline)`);
-        } else {
-          console.log(`   ❌ User @${targetUsername} not found`);
-        }
-        return;
+  // ⭐ NEW: Find ALL sockets for a user (not just one)
+  const findAllUserSockets = (userId) => {
+    const sockets = [];
+    connectedUsers.forEach((data) => {
+      if (data.user._id.toString() === userId.toString()) {
+        sockets.push(data);
       }
+    });
+    return sockets;
+  };
 
-      const count = await markConversationAsRead(
-        targetSocketData.activeConversationId,
-        io,
-        targetSocketData.socket
-      );
-      console.log(`   ✅ Marked ${count} messages as read for @${targetUsername}`);
-      return;
-    }
+  const broadcastToOperators = (event, data) => {
+    connectedOperators.forEach((opData) => {
+      opData.socket.emit(event, data);
+    });
+  };
 
-    if (trimmedInput === '/read all') {
-      let totalCount = 0;
-      for (const [, data] of connectedUsers) {
-        const count = await markConversationAsRead(
-          data.activeConversationId,
-          io,
-          data.socket
-        );
-        totalCount += count || 0;
-      }
-      console.log(`   ✅ Marked ${totalCount} messages as read`);
-      return;
-    }
-
-    if (trimmedInput.startsWith('/status @')) {
-      const targetUsername = trimmedInput.replace('/status @', '').trim();
-      const conv = await Conversation.findOne({ username: targetUsername });
-      if (!conv) {
-        console.log(`   ❌ No conversation for @${targetUsername}`);
-        return;
-      }
-      const messages = await Message.find({ conversationId: conv._id })
-        .sort({ timestamp: -1 })
-        .limit(10);
-
-      console.log(`\n📊 Message Status for @${targetUsername}:`);
-      messages.reverse().forEach((msg) => {
-        const statusIcon =
-          msg.status === 'read' ? '🔵✓✓' :
-          msg.status === 'delivered' ? '⚫✓✓' :
-          msg.status === 'sent' ? '⚫✓' : '⏳';
-        const sender = msg.sender === 'user' ? '👤' : '🤖';
-        console.log(`   ${sender} ${statusIcon} [${msg.status}] ${msg.senderName}: ${msg.content}`);
-      });
-      console.log('');
-      return;
-    }
-
-    if (trimmedInput.startsWith('/history @')) {
-      const targetUsername = trimmedInput.replace('/history @', '').trim();
-      const conv = await Conversation.findOne({ username: targetUsername });
-      if (!conv) {
-        console.log(`   ❌ No conversation for @${targetUsername}`);
-        return;
-      }
-      const messages = await Message.find({ conversationId: conv._id })
-        .sort({ timestamp: 1 })
-        .limit(20);
-
-      console.log(`\n📜 History for @${targetUsername}:`);
-      messages.forEach((msg) => {
-        const time = new Date(msg.timestamp).toLocaleTimeString();
-        const prefix = msg.sender === 'user' ? '👤' : '🤖';
-        console.log(`   ${prefix} [${time}] ${msg.senderName}: ${msg.content}`);
-      });
-      console.log('');
-      return;
-    }
-
-    if (trimmedInput.startsWith('@')) {
-      const spaceIndex = trimmedInput.indexOf(' ');
-      if (spaceIndex === -1) {
-        console.log('   ⚠️  Usage: @username your message');
-        return;
-      }
-
-      const targetUsername = trimmedInput.substring(1, spaceIndex);
-      const messageContent = trimmedInput.substring(spaceIndex + 1);
-
-      let targetSocketData = null;
-      connectedUsers.forEach((data) => {
-        if (data.user.username === targetUsername) {
-          targetSocketData = data;
-        }
-      });
-
-      if (!targetSocketData) {
-        console.log(`   ❌ @${targetUsername} is not connected.`);
-        return;
-      }
-
-      try {
-        const message = await Message.create({
-          conversationId: targetSocketData.activeConversationId,
-          sender: 'operator',
-          senderName: 'Operator',
-          content: messageContent,
-          status: 'delivered'
-        });
-
-        await Conversation.findByIdAndUpdate(
-          targetSocketData.activeConversationId,
-          { lastMessage: messageContent, lastMessageAt: new Date() }
-        );
-
-        targetSocketData.socket.emit('receive_message', {
-          _id: message._id,
-          conversationId: message.conversationId,
-          sender: 'operator',
-          senderName: 'Operator',
-          content: messageContent,
-          status: 'delivered',
-          timestamp: message.timestamp
-        });
-
-        console.log(`   ✅ Sent to @${targetUsername}: ${messageContent}`);
-      } catch (err) {
-        console.log(`   ❌ Error: ${err.message}`);
-      }
-      return;
-    }
-
-    console.log('   ⚠️  Commands: @username msg | /users | /read @username | /read all | /status @username');
-  });
-
-  // Socket Auth
+  // ── Socket Auth Middleware ──
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token;
-      if (!token) return next(new Error('No token'));
+      if (!token) return next(new Error('No token provided'));
+
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.id).select('-password');
       if (!user) return next(new Error('User not found'));
+
+      console.log(`🔌 Socket auth: ${user.username} (role: ${user.role})`);
       socket.user = user;
       next();
     } catch (err) {
+      console.error('Socket auth error:', err.message);
       next(new Error('Invalid token'));
     }
   });
 
   io.on('connection', async (socket) => {
     const user = socket.user;
-    console.log(`\n🟢 Connected: ${user.username}`);
 
-    await User.findByIdAndUpdate(user._id, { isOnline: true });
+    // ══════════════════════════════════════════════════════
+    //  OPERATOR CONNECTION
+    // ══════════════════════════════════════════════════════
+    if (user.role === 'operator') {
+      console.log(`\n🖥️  Operator connected: ${user.username} (${socket.id})`);
 
-    let conversation = await Conversation.findOne({ userId: user._id });
-    if (!conversation) {
-      conversation = await Conversation.create({
-        userId: user._id,
-        username: user.username,
-        title: 'Chat 1'
-      });
-    }
-
-    connectedUsers.set(socket.id, {
-      socket,
-      user: { _id: user._id, username: user.username },
-      activeConversationId: conversation._id
-    });
-
-    socket.emit('conversation_info', {
-      conversationId: conversation._id
-    });
-
-    // Deliver queued messages
-    if (operatorOnline) {
-      const queuedMessages = await Message.find({
-        conversationId: conversation._id,
-        status: 'sent',
-        sender: 'user'
+      connectedOperators.set(socket.id, {
+        socket,
+        user: { _id: user._id, username: user.username },
+        viewingConversationId: null
       });
 
-      for (const msg of queuedMessages) {
-        await markAsDelivered(msg._id, io, socket);
-      }
+      socket.emit('operator_connected_ack', {
+        message: 'Connected to dashboard',
+        connectedUsers: connectedUsers.size
+      });
 
-      if (queuedMessages.length > 0) {
-        console.log(`   📬 Delivered ${queuedMessages.length} queued messages for ${user.username}`);
-      }
-    }
-
-    // ── THE KEY FIX: send_message handler ──
-    socket.on('send_message', async (data) => {
+      // Deliver queued messages
       try {
-        // IMPORTANT: receive tempId from frontend
-        const { content, conversationId, tempId } = data;
-        if (!content?.trim()) return;
+        const count = await deliverQueuedMessages(io, connectedUsers);
+        if (count > 0) console.log(`   📬 Auto-delivered ${count} queued messages`);
+      } catch (err) {
+        console.error('Error delivering queued messages:', err.message);
+      }
 
-        const targetConvId =
-          conversationId ||
-          connectedUsers.get(socket.id)?.activeConversationId;
+      // Operator sends message
+      socket.on('operator_send_message', async (data) => {
+        try {
+          const { conversationId, content } = data;
+          if (!content?.trim() || !conversationId) return;
 
+          const conversation = await Conversation.findById(conversationId);
+          if (!conversation) return;
+
+          const message = await Message.create({
+            conversationId,
+            sender: 'operator',
+            senderName: user.username,
+            content: content.trim(),
+            status: 'delivered'
+          });
+
+          await Conversation.findByIdAndUpdate(conversationId, {
+            lastMessage: content.trim(),
+            lastMessageAt: new Date()
+          });
+
+          const msgData = {
+            _id: message._id,
+            conversationId: message.conversationId,
+            sender: 'operator',
+            senderName: user.username,
+            content: message.content,
+            status: 'delivered',
+            timestamp: message.timestamp
+          };
+
+          // ⭐ Send to ALL sockets of the target user (not just one)
+          // WHY: User might have multiple tabs open
+          const targetUserSockets = findAllUserSockets(conversation.userId);
+          targetUserSockets.forEach(userSocketData => {
+            userSocketData.socket.emit('receive_message', msgData);
+          });
+
+          if (targetUserSockets.length > 0) {
+            console.log(`   ✅ Delivered to ${conversation.username} (${targetUserSockets.length} tab${targetUserSockets.length > 1 ? 's' : ''})`);
+          } else {
+            console.log(`   ⚠️  ${conversation.username} is offline`);
+          }
+
+          socket.emit('message_sent_confirm', msgData);
+          broadcastToOperators('new_message_in_conversation', { conversationId, message: msgData });
+
+        } catch (error) {
+          console.error('❌ Operator send error:', error.message);
+        }
+      });
+
+      socket.on('operator_typing', async (data) => {
+        try {
+          const { conversationId, isTyping } = data;
+          if (!conversationId) return;
+
+          const conversation = await Conversation.findById(conversationId);
+          if (!conversation) return;
+
+          // ⭐ Send typing to ALL of user's sockets
+          const targetUserSockets = findAllUserSockets(conversation.userId);
+          targetUserSockets.forEach(userSocketData => {
+            userSocketData.socket.emit('operator_typing', {
+              isTyping,
+              conversationId,
+              typingUser: user.username
+            });
+          });
+        } catch (err) {
+          console.error('Typing error:', err.message);
+        }
+      });
+
+      socket.on('operator_mark_read', async (data) => {
+        try {
+          const { conversationId } = data;
+          if (!conversationId) return;
+
+          const conversation = await Conversation.findById(conversationId);
+          if (!conversation) return;
+
+          // ⭐ Notify ALL of user's sockets
+          const targetUserSockets = findAllUserSockets(conversation.userId);
+          const primarySocket = targetUserSockets[0]?.socket || null;
+
+          const count = await markConversationAsRead(conversationId, io, primarySocket);
+
+          // Broadcast to remaining sockets
+          targetUserSockets.slice(1).forEach(userSocketData => {
+            userSocketData.socket.emit('messages_read', {
+              conversationId,
+              messageIds: [], // client will refresh
+              readAt: new Date()
+            });
+          });
+
+          console.log(`   ✅ Marked ${count} messages as read in conv ${conversationId}`);
+          broadcastToOperators('conversation_read', { conversationId, readCount: count });
+
+        } catch (err) {
+          console.error('Mark read error:', err.message);
+        }
+      });
+
+      socket.on('operator_viewing', (data) => {
+        const opData = connectedOperators.get(socket.id);
+        if (opData) {
+          opData.viewingConversationId = data.conversationId;
+          connectedOperators.set(socket.id, opData);
+        }
+      });
+
+      socket.on('disconnect', (reason) => {
+        console.log(`\n🖥️  Operator disconnected: ${user.username} (${reason})`);
+        connectedOperators.delete(socket.id);
+      });
+
+    } else {
+      // ══════════════════════════════════════════════════════
+      //  USER CONNECTION
+      // ══════════════════════════════════════════════════════
+      console.log(`\n👤 User connected: ${user.username} (${socket.id})`);
+
+      // ⭐ INCREMENT socket count for this user
+      const userIdStr = user._id.toString();
+      const currentCount = userSocketCount.get(userIdStr) || 0;
+      userSocketCount.set(userIdStr, currentCount + 1);
+
+      console.log(`   📊 ${user.username} now has ${currentCount + 1} tab(s) open`);
+
+      // ⭐ Only mark as online if this is their FIRST socket
+      // (avoids unnecessary DB write on every tab open)
+      const wasOffline = currentCount === 0;
+      if (wasOffline) {
+        await User.findByIdAndUpdate(user._id, {
+          isOnline: true,
+          lastSeen: new Date()
+        });
+
+        // Notify operators only if user JUST came online (was offline before)
+        broadcastToOperators('user_status_change', {
+          userId: user._id,
+          username: user.username,
+          isOnline: true
+        });
+      }
+
+      let conversation = await Conversation.findOne({ userId: user._id });
+      if (!conversation) {
+        conversation = await Conversation.create({
+          userId: user._id,
+          username: user.username,
+          title: 'Chat 1'
+        });
+      }
+
+      connectedUsers.set(socket.id, {
+        socket,
+        user: { _id: user._id, username: user.username },
+        activeConversationId: conversation._id
+      });
+
+      socket.emit('conversation_info', { conversationId: conversation._id });
+
+      // Deliver queued messages if operator online
+      if (isAnyOperatorOnline()) {
+        try {
+          const userConvs = await Conversation.find({ userId: user._id });
+          const convIds = userConvs.map(c => c._id);
+          const queued = await Message.find({
+            conversationId: { $in: convIds },
+            status: 'sent',
+            sender: 'user'
+          });
+
+          for (const msg of queued) {
+            await Message.findByIdAndUpdate(msg._id, {
+              status: 'delivered',
+              deliveredAt: new Date()
+            });
+            socket.emit('message_status_update', {
+              messageId: msg._id,
+              status: 'delivered',
+              deliveredAt: new Date()
+            });
+          }
+
+          if (queued.length > 0) {
+            console.log(`   📬 Delivered ${queued.length} queued messages to ${user.username}`);
+          }
+        } catch (err) {
+          console.error('Queue delivery error:', err.message);
+        }
+      }
+
+      socket.on('send_message', async (data) => {
+        try {
+          const { content, conversationId, tempId } = data;
+          if (!content?.trim()) return;
+
+          const targetConvId = conversationId ||
+            connectedUsers.get(socket.id)?.activeConversationId;
+
+          if (!targetConvId) return;
+
+          const userData = connectedUsers.get(socket.id);
+          if (userData) {
+            userData.activeConversationId = targetConvId;
+            connectedUsers.set(socket.id, userData);
+          }
+
+          const message = await Message.create({
+            conversationId: targetConvId,
+            sender: 'user',
+            senderName: user.username,
+            content: content.trim(),
+            status: 'sent'
+          });
+
+          await Conversation.findByIdAndUpdate(targetConvId, {
+            lastMessage: content.trim(),
+            lastMessageAt: new Date()
+          });
+
+          // Confirm to the sending socket
+          socket.emit('message_confirmed', {
+            _id: message._id,
+            tempId,
+            conversationId: message.conversationId,
+            sender: 'user',
+            senderName: user.username,
+            content: message.content,
+            status: 'sent',
+            timestamp: message.timestamp
+          });
+
+          const msgData = {
+            _id: message._id,
+            conversationId: message.conversationId,
+            sender: 'user',
+            senderName: user.username,
+            content: message.content,
+            status: 'sent',
+            timestamp: message.timestamp
+          };
+
+          // ⭐ Send to OTHER sockets of the same user (sync across tabs)
+          const allUserSockets = findAllUserSockets(user._id);
+          allUserSockets.forEach(userSocketData => {
+            if (userSocketData.socket.id !== socket.id) {
+              userSocketData.socket.emit('receive_message', msgData);
+            }
+          });
+
+          broadcastToOperators('new_user_message', {
+            conversationId: targetConvId,
+            userId: user._id,
+            username: user.username,
+            message: msgData
+          });
+
+          console.log(`   💬 ${user.username}: ${content.trim()}`);
+
+          if (isAnyOperatorOnline()) {
+            setTimeout(async () => {
+              try {
+                await markAsDelivered(message._id, io, socket);
+                // Also update other tabs
+                allUserSockets.forEach(userSocketData => {
+                  if (userSocketData.socket.id !== socket.id) {
+                    userSocketData.socket.emit('message_status_update', {
+                      messageId: message._id,
+                      status: 'delivered',
+                      deliveredAt: new Date()
+                    });
+                  }
+                });
+                broadcastToOperators('message_status_changed', {
+                  messageId: message._id,
+                  conversationId: targetConvId,
+                  status: 'delivered'
+                });
+              } catch (err) {
+                console.error('Deliver error:', err.message);
+              }
+            }, 500);
+          }
+
+        } catch (error) {
+          console.error('❌ send_message error:', error.message);
+        }
+      });
+
+      socket.on('typing', () => {
+        const userData = connectedUsers.get(socket.id);
+        broadcastToOperators('user_typing', {
+          userId: user._id,
+          username: user.username,
+          conversationId: userData?.activeConversationId,
+          isTyping: true
+        });
+        setTimeout(() => {
+          broadcastToOperators('user_typing', {
+            userId: user._id,
+            username: user.username,
+            conversationId: userData?.activeConversationId,
+            isTyping: false
+          });
+        }, 3000);
+      });
+
+      socket.on('switch_conversation', ({ conversationId }) => {
         const userData = connectedUsers.get(socket.id);
         if (userData) {
-          userData.activeConversationId = targetConvId;
+          userData.activeConversationId = conversationId;
           connectedUsers.set(socket.id, userData);
         }
+      });
 
-        // Save to MongoDB
-        const message = await Message.create({
-          conversationId: targetConvId,
-          sender: 'user',
-          senderName: user.username,
-          content: content.trim(),
-          status: 'sent'
-        });
+      // ⭐ FIXED: Only mark offline when ALL tabs close
+      socket.on('disconnect', async (reason) => {
+        console.log(`\n👤 User socket disconnected: ${user.username} (${reason})`);
 
-        await Conversation.findByIdAndUpdate(targetConvId, {
-          lastMessage: content.trim(),
-          lastMessageAt: new Date()
-        });
+        // Decrement socket count
+        const userIdStr = user._id.toString();
+        const currentCount = userSocketCount.get(userIdStr) || 1;
+        const newCount = currentCount - 1;
 
-        // FIX: Send back tempId so frontend can find and replace the pending message
-        socket.emit('message_confirmed', {
-          _id: message._id,
-          tempId: tempId,  // ← THIS WAS MISSING - frontend needs this to match
-          conversationId: message.conversationId,
-          sender: 'user',
-          senderName: user.username,
-          content: message.content,
-          status: 'sent',
-          timestamp: message.timestamp
-        });
+        connectedUsers.delete(socket.id);
 
-        // If operator online, mark delivered after a tiny delay
-        // WHY: So user sees sent ✓ briefly before ✓✓
-        if (operatorOnline) {
-          setTimeout(async () => {
-            await markAsDelivered(message._id, io, socket);
-          }, 500);
+        if (newCount <= 0) {
+          // No more sockets → user is truly offline
+          userSocketCount.delete(userIdStr);
+          console.log(`   ⚫ ${user.username} is now OFFLINE (all tabs closed)`);
+
+          try {
+            await User.findByIdAndUpdate(user._id, {
+              isOnline: false,
+              lastSeen: new Date()
+            });
+          } catch (err) {
+            console.error('Disconnect update error:', err.message);
+          }
+
+          // Notify operators that user went offline
+          broadcastToOperators('user_status_change', {
+            userId: user._id,
+            username: user.username,
+            isOnline: false
+          });
+        } else {
+          // Still has other tabs open → stay online
+          userSocketCount.set(userIdStr, newCount);
+          console.log(`   🟢 ${user.username} still has ${newCount} tab(s) open - remaining online`);
         }
-
-        const conv = await Conversation.findById(targetConvId);
-        console.log(`\n💬 [${user.username}] in [${conv?.title || 'Chat'}]: ${content.trim()}`);
-        console.log(`   Reply: @${user.username} your reply`);
-        console.log(`   Mark read: /read @${user.username}`);
-      } catch (error) {
-        console.error('Message error:', error);
-        socket.emit('error_message', { message: 'Failed to send message' });
-      }
-    });
-
-    socket.on('switch_conversation', ({ conversationId }) => {
-      const userData = connectedUsers.get(socket.id);
-      if (userData) {
-        userData.activeConversationId = conversationId;
-        connectedUsers.set(socket.id, userData);
-      }
-    });
-
-    socket.on('typing', () => {
-      console.log(`   ⌨️  ${user.username} is typing...`);
-    });
-
-    socket.on('disconnect', async () => {
-      console.log(`\n🔴 Disconnected: ${user.username}`);
-      await User.findByIdAndUpdate(user._id, { isOnline: false });
-      connectedUsers.delete(socket.id);
-    });
+      });
+    }
   });
 };
 

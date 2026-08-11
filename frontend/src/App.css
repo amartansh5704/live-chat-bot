@@ -930,3 +930,355 @@ body.dark-mode .tick-delivered {
 body.dark-mode .tick-read {
   color: rgba(102, 126, 234, 0.8);
 }
+
+/* ========================================
+   OFFLINE BANNER + INDICATORS
+   ======================================== */
+
+/* Banner that shows when server is down */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+  color: white;
+  font-size: 13px;
+  animation: slideDown 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+
+body.dark-mode .offline-banner {
+  background: linear-gradient(135deg, #b45309 0%, #92400e 100%);
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.offline-icon {
+  font-size: 20px;
+  animation: antennaWave 2s ease-in-out infinite;
+}
+
+@keyframes antennaWave {
+  0%, 100% { transform: rotate(0deg); }
+  25%      { transform: rotate(10deg); }
+  75%      { transform: rotate(-10deg); }
+}
+
+.offline-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.offline-text strong {
+  font-size: 13px;
+}
+
+.offline-text span {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+/* Animated dots showing "trying to reconnect" */
+.offline-dot-animation {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.offline-dot-animation span {
+  width: 6px;
+  height: 6px;
+  background: white;
+  border-radius: 50%;
+  animation: dotBounce 1.4s ease-in-out infinite;
+}
+
+.offline-dot-animation span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.offline-dot-animation span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40%           { opacity: 1;   transform: scale(1.2); }
+}
+
+/* Offline state for message input */
+.message-input input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Queue button style when offline */
+.message-input button {
+  transition: background 0.3s, transform 0.2s, box-shadow 0.2s;
+}
+
+/* ========================================
+   OPERATOR TYPING INDICATOR
+   ======================================== */
+
+/* Wrapper animates in from the left */
+.typing-bubble-wrapper {
+  animation: typingSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes typingSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* The bubble itself */
+.typing-bubble {
+  padding: 12px 18px !important;
+  min-width: 70px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Three bouncing dots */
+.typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: typingBounce 1.4s ease-in-out infinite;
+}
+
+/* Each dot bounces at a different time */
+.typing-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typingBounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+/* Header typing indicator (replaces connection status) */
+.operator-typing-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Small dots in the header */
+.header-typing-dots {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.header-typing-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: typingBounce 1.4s ease-in-out infinite;
+}
+
+.header-typing-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.header-typing-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* ═══════════════════════════════════════
+   WEB THREADS BACKGROUND FOR AUTH PAGES
+   ═══════════════════════════════════════ */
+
+/* Container for auth pages with animated background */
+.auth-container-with-bg {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+  overflow: hidden;
+  /* Dark background as fallback while WebGL loads */
+  background: #0a0a1a;
+}
+
+/* Background layer - absolute positioned, fills entire screen */
+.webthreads-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+/* Glassmorphic card on top of the background */
+.glass-card {
+  position: relative;
+  z-index: 2;
+  background: rgba(15, 15, 30, 0.6);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  padding: 45px 40px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 40px rgba(82, 39, 255, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  animation: cardFadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cardFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(30px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Override auth-header text colors for glass card */
+.glass-card .auth-header h1 {
+  color: #ffffff;
+  text-shadow: 0 2px 20px rgba(82, 39, 255, 0.5);
+  font-size: 34px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.glass-card .auth-header p {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+}
+
+/* Form labels white on glass */
+.glass-card .form-group label {
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+/* Input fields translucent on glass */
+.glass-card .form-group input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1.5px solid rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  transition: all 0.25s ease;
+}
+
+.glass-card .form-group input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.glass-card .form-group input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #a78bfa;
+  box-shadow:
+    0 0 0 4px rgba(167, 139, 250, 0.15),
+    0 0 20px rgba(82, 39, 255, 0.3);
+}
+
+/* Button glowing effect */
+.glass-card .auth-btn {
+  background: linear-gradient(135deg, #5227FF 0%, #FF9FFC 100%);
+  box-shadow:
+    0 8px 25px rgba(82, 39, 255, 0.4),
+    0 0 40px rgba(255, 159, 252, 0.2);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: all 0.3s ease;
+}
+
+.glass-card .auth-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 12px 35px rgba(82, 39, 255, 0.5),
+    0 0 60px rgba(255, 159, 252, 0.3);
+}
+
+.glass-card .auth-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Footer link */
+.glass-card .auth-footer {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.glass-card .auth-footer a {
+  color: #FF9FFC;
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(255, 159, 252, 0.4);
+}
+
+.glass-card .auth-footer a:hover {
+  color: #ffffff;
+  text-shadow: 0 0 15px rgba(255, 159, 252, 0.7);
+}
+
+/* Error message on glass card */
+.glass-card .error-message {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ff9d9d;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  backdrop-filter: blur(10px);
+}

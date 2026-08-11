@@ -65,39 +65,63 @@ const markConversationAsRead = async (conversationId, io, userSocket) => {
   }
 };
 
+// ── Deliver ALL queued messages across ALL conversations ──
+// WHY: When operator types /online, find every message stuck at 'sent'
+//      and deliver them. Notify each connected user so their ticks update.
 const deliverQueuedMessages = async (io, connectedUsers) => {
   try {
+    // Step 1: Find ALL undelivered user messages in the entire database
     const queuedMessages = await Message.find({
       status: 'sent',
       sender: 'user'
     });
 
-    console.log(`📬 Found ${queuedMessages.length} queued messages to deliver`);
+    if (queuedMessages.length === 0) {
+      console.log('   📭 No queued messages to deliver');
+      return 0;
+    }
+
+    console.log(`   📬 Found ${queuedMessages.length} queued messages`);
+
+    let deliveredCount = 0;
 
     for (const message of queuedMessages) {
-      let targetSocket = null;
+      // Step 2: Find which conversation this message belongs to
+      const conversation = await Conversation.findById(message.conversationId);
+      if (!conversation) continue;
 
-      connectedUsers.forEach((data) => {
-        if (data.user._id.toString() === message.conversationId?.userId?.toString()) {
-          targetSocket = data.socket;
-        }
-      });
-
+      // Step 3: Update status in MongoDB
       await Message.findByIdAndUpdate(message._id, {
         status: 'delivered',
         deliveredAt: new Date()
       });
 
-      if (targetSocket) {
-        targetSocket.emit('message_status_update', {
+      deliveredCount++;
+
+      // Step 4: Find if this conversation's user is currently connected
+      let userSocket = null;
+      connectedUsers.forEach((data) => {
+        if (data.user._id.toString() === conversation.userId.toString()) {
+          userSocket = data.socket;
+        }
+      });
+
+      // Step 5: If user is online, notify them so tick updates from ✓ to ✓✓
+      if (userSocket) {
+        userSocket.emit('message_status_update', {
           messageId: message._id,
           status: 'delivered',
           deliveredAt: new Date()
         });
       }
+      // If user is offline, no problem - they'll see ✓✓ when they
+      // reconnect because MongoDB already has status:'delivered'
     }
+
+    return deliveredCount;
   } catch (error) {
     console.error('Error delivering queued messages:', error);
+    return 0;
   }
 };
 

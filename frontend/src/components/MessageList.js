@@ -4,7 +4,6 @@ import React, { useEffect, useRef } from 'react';
 const MessageTick = ({ status }) => {
   if (!status) return null;
 
-  // Pending: pulsing clock
   if (status === 'pending') {
     return (
       <span className="tick tick-pending" title="Sending...">
@@ -16,7 +15,6 @@ const MessageTick = ({ status }) => {
     );
   }
 
-  // Sent: single grey tick
   if (status === 'sent') {
     return (
       <span className="tick tick-sent" title="Sent">
@@ -27,7 +25,6 @@ const MessageTick = ({ status }) => {
     );
   }
 
-  // Delivered: double grey tick
   if (status === 'delivered') {
     return (
       <span className="tick tick-delivered" title="Delivered">
@@ -39,7 +36,6 @@ const MessageTick = ({ status }) => {
     );
   }
 
-  // Read: double blue tick
   if (status === 'read') {
     return (
       <span className="tick tick-read" title="Read">
@@ -54,12 +50,34 @@ const MessageTick = ({ status }) => {
   return null;
 };
 
-const MessageList = ({ messages, isDarkMode }) => {
+// ══════════════════════════════════════════════════════
+//  TYPING BUBBLE COMPONENT
+// ══════════════════════════════════════════════════════
+// WHY: Isolated component for the animated "..." bubble
+//      Shows on the left side like an operator message
+const TypingBubble = ({ isDarkMode }) => {
+  return (
+    <div className="message message-operator typing-bubble-wrapper">
+      <div className={`message-bubble typing-bubble ${isDarkMode ? 'dark' : ''}`}>
+        <div className="message-sender">Operator</div>
+        <div className="typing-dots">
+          <span className="typing-dot"></span>
+          <span className="typing-dot"></span>
+          <span className="typing-dot"></span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Main MessageList ──
+const MessageList = ({ messages, isDarkMode, operatorTyping }) => {
   const messagesEndRef = useRef(null);
 
+  // Scroll to bottom when messages change OR when typing starts
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, operatorTyping]);
 
   const formatTime = (timestamp) => {
     if (!timestamp) return '';
@@ -71,7 +89,7 @@ const MessageList = ({ messages, isDarkMode }) => {
 
   return (
     <div className={`message-list ${isDarkMode ? 'dark' : ''}`}>
-      {messages.length === 0 && (
+      {messages.length === 0 && !operatorTyping && (
         <div className="no-messages">
           <div className="no-messages-icon">💬</div>
           <p>No messages yet</p>
@@ -81,7 +99,6 @@ const MessageList = ({ messages, isDarkMode }) => {
 
       {messages.map((msg, index) => (
         <div
-          // Use _id for saved messages, tempId for pending, index as last resort
           key={msg._id || msg.tempId || `msg-${index}`}
           className={`
             message
@@ -97,7 +114,6 @@ const MessageList = ({ messages, isDarkMode }) => {
               <span className="message-time">
                 {formatTime(msg.timestamp)}
               </span>
-              {/* Only show ticks on USER messages, not operator messages */}
               {msg.sender === 'user' && (
                 <span className="message-status">
                   <MessageTick status={msg.status || 'sent'} />
@@ -107,6 +123,9 @@ const MessageList = ({ messages, isDarkMode }) => {
           </div>
         </div>
       ))}
+
+      {/* ── Typing Bubble - shows when operator is typing ── */}
+      {operatorTyping && <TypingBubble isDarkMode={isDarkMode} />}
 
       <div ref={messagesEndRef} />
     </div>

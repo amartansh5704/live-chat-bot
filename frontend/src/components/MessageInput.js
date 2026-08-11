@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const MessageInput = ({ onSendMessage, onTyping, isDarkMode }) => {
+const MessageInput = ({ onSendMessage, onTyping, isDarkMode, serverOnline }) => {
   const [message, setMessage] = useState('');
 
   const handleSubmit = (e) => {
@@ -30,11 +30,15 @@ const MessageInput = ({ onSendMessage, onTyping, isDarkMode }) => {
         value={message}
         onChange={handleChange}
         onKeyPress={handleKeyPress}
-        placeholder="Type a message..."
+        placeholder={
+          serverOnline
+            ? 'Type a message...'
+            : '✉️ Type a message (will send when online)...'
+        }
         autoFocus
       />
       <button type="submit" disabled={!message.trim()}>
-        Send ➤
+        {serverOnline ? 'Send ➤' : 'Queue ➤'}
       </button>
     </form>
   );

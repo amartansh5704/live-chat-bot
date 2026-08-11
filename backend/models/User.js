@@ -15,16 +15,28 @@ const userSchema = new mongoose.Schema({
     unique: true,
     trim: true,
     lowercase: true,
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+    match: [
+      /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+      'Please enter a valid email'
+    ]
   },
   password: {
     type: String,
     required: [true, 'Password is required'],
     minlength: [6, 'Password must be at least 6 characters']
   },
+  role: {
+    type: String,
+    enum: ['user', 'operator'],
+    default: 'user'
+  },
   isOnline: {
     type: Boolean,
     default: false
+  },
+  lastSeen: {
+    type: Date,
+    default: Date.now
   },
   createdAt: {
     type: Date,
@@ -32,8 +44,7 @@ const userSchema = new mongoose.Schema({
   }
 });
 
-// Hash password before saving to database
-// WHY: Never store plain text passwords - security best practice
+// Hash password before saving
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   const salt = await bcrypt.genSalt(10);
@@ -41,10 +52,13 @@ userSchema.pre('save', async function (next) {
   next();
 });
 
-// Method to compare entered password with hashed password
-// WHY: Used during login to verify credentials
+// Compare passwords on login
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-module.exports = mongoose.model('User', userSchema);
+// ── THE FIX ──
+// WHY: mongoose.models.User checks if the model already exists
+//      If it does, reuse it. If not, create it fresh.
+//      This prevents the OverwriteModelError on hot reloads.
+module.exports = mongoose.models.User || mongoose.model('User', userSchema);
