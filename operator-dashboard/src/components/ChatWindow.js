@@ -1,13 +1,16 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 const ChatWindow = ({
   messages,
   activeUser,
   activeConversation,
   userTyping,
-  onMarkRead
+  onMarkRead,
+  onDeleteMessage,
+  currentOperatorName
 }) => {
   const bottomRef = useRef(null);
+  const [hoveredMsgId, setHoveredMsgId] = useState(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -19,18 +22,18 @@ const ChatWindow = ({
   };
 
   const getStatusIcon = (msg) => {
-    if (msg.sender !== 'operator') return null;
+    if (msg.sender !== 'operator' || msg.isDeleted) return null;
     const s = msg.status;
     if (s === 'read') return <span className="tick-op blue">✓✓</span>;
     if (s === 'delivered') return <span className="tick-op grey">✓✓</span>;
     return <span className="tick-op grey">✓</span>;
   };
 
-  // Auto mark as read when operator views messages
+  // Auto mark as read
   useEffect(() => {
     if (activeConversation && messages.length > 0) {
       const hasUnread = messages.some(
-        m => m.sender === 'user' && m.status !== 'read'
+        m => m.sender === 'user' && m.status !== 'read' && !m.isDeleted
       );
       if (hasUnread) {
         onMarkRead(activeConversation);
@@ -52,7 +55,6 @@ const ChatWindow = ({
 
   return (
     <div className="chat-window">
-      {/* Header */}
       <div className="chat-window-header">
         <div className="chat-window-user">
           <div className="chat-window-avatar">
@@ -76,7 +78,6 @@ const ChatWindow = ({
         </div>
       </div>
 
-      {/* Messages */}
       <div className="chat-window-messages">
         {messages.length === 0 && (
           <div className="no-messages-op">
@@ -84,21 +85,58 @@ const ChatWindow = ({
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <div
-            key={msg._id || i}
-            className={`msg ${msg.sender === 'operator' ? 'msg-operator' : 'msg-user'}`}
-          >
-            <div className="msg-bubble">
-              <div className="msg-sender">{msg.senderName}</div>
-              <div className="msg-content">{msg.content}</div>
-              <div className="msg-footer">
-                <span className="msg-time">{formatTime(msg.timestamp)}</span>
-                {getStatusIcon(msg)}
+        {messages.map((msg, i) => {
+          // Only operator's own non-deleted messages can be deleted by operator
+          const isOwnOperatorMessage = msg.sender === 'operator';
+          const canDelete = isOwnOperatorMessage && !msg.isDeleted && msg._id;
+
+          return (
+            <div
+              key={msg._id || i}
+              className={`
+                msg
+                ${msg.sender === 'operator' ? 'msg-operator' : 'msg-user'}
+                ${msg.isDeleted ? 'msg-deleted' : ''}
+              `}
+              onMouseEnter={() => setHoveredMsgId(msg._id)}
+              onMouseLeave={() => setHoveredMsgId(null)}
+            >
+              {/* Delete button (only on own operator messages) */}
+              {canDelete && hoveredMsgId === msg._id && (
+                <button
+                  className="msg-delete-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteMessage(msg._id);
+                  }}
+                  title="Delete message"
+                >
+                  🗑️
+                </button>
+              )}
+
+              <div className="msg-bubble">
+                <div className="msg-sender">{msg.senderName}</div>
+
+                {msg.isDeleted ? (
+                  <div className="msg-content-deleted">
+                    <span>🚫</span>
+                    <span>
+                      This message was deleted by {msg.deletedBy === 'user' ? 'user' : 'operator'}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="msg-content">{msg.content}</div>
+                )}
+
+                <div className="msg-footer">
+                  <span className="msg-time">{formatTime(msg.timestamp)}</span>
+                  {getStatusIcon(msg)}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* User typing bubble */}
         {userTyping?.userId === activeUser?._id &&

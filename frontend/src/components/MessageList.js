@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
-// ── Tick Icons ──
+// ── Tick Icons (same as before) ──
 const MessageTick = ({ status }) => {
   if (!status) return null;
 
@@ -50,31 +50,48 @@ const MessageTick = ({ status }) => {
   return null;
 };
 
-// ══════════════════════════════════════════════════════
-//  TYPING BUBBLE COMPONENT
-// ══════════════════════════════════════════════════════
-// WHY: Isolated component for the animated "..." bubble
-//      Shows on the left side like an operator message
-const TypingBubble = ({ isDarkMode }) => {
-  return (
-    <div className="message message-operator typing-bubble-wrapper">
-      <div className={`message-bubble typing-bubble ${isDarkMode ? 'dark' : ''}`}>
-        <div className="message-sender">Operator</div>
-        <div className="typing-dots">
-          <span className="typing-dot"></span>
-          <span className="typing-dot"></span>
-          <span className="typing-dot"></span>
-        </div>
+// ── Typing Bubble ──
+const TypingBubble = ({ isDarkMode }) => (
+  <div className="message message-operator typing-bubble-wrapper">
+    <div className={`message-bubble typing-bubble ${isDarkMode ? 'dark' : ''}`}>
+      <div className="message-sender">Operator</div>
+      <div className="typing-dots">
+        <span className="typing-dot"></span>
+        <span className="typing-dot"></span>
+        <span className="typing-dot"></span>
       </div>
+    </div>
+  </div>
+);
+
+// ── Deleted Message Placeholder ──
+// WHY: When a message is soft-deleted, show this instead of the content
+const DeletedMessage = ({ msg, isOwnMessage }) => {
+  const deletedByLabel = msg.deletedBy === 'user'
+    ? (isOwnMessage ? 'you' : 'sender')
+    : 'operator';
+
+  return (
+    <div className="message-content-deleted">
+      <span className="deleted-icon">🚫</span>
+      <span className="deleted-text">
+        This message was deleted by {deletedByLabel}
+      </span>
     </div>
   );
 };
 
 // ── Main MessageList ──
-const MessageList = ({ messages, isDarkMode, operatorTyping }) => {
+const MessageList = ({
+  messages,
+  isDarkMode,
+  operatorTyping,
+  currentUsername,
+  onDeleteMessage
+}) => {
   const messagesEndRef = useRef(null);
+  const [hoveredMsgId, setHoveredMsgId] = useState(null);
 
-  // Scroll to bottom when messages change OR when typing starts
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, operatorTyping]);
@@ -97,34 +114,63 @@ const MessageList = ({ messages, isDarkMode, operatorTyping }) => {
         </div>
       )}
 
-      {messages.map((msg, index) => (
-        <div
-          key={msg._id || msg.tempId || `msg-${index}`}
-          className={`
-            message
-            ${msg.sender === 'user' ? 'message-user' : 'message-operator'}
-            message-animate
-            ${msg.status === 'pending' ? 'message-pending' : ''}
-          `}
-        >
-          <div className={`message-bubble ${isDarkMode ? 'dark' : ''}`}>
-            <div className="message-sender">{msg.senderName}</div>
-            <div className="message-content">{msg.content}</div>
-            <div className="message-footer">
-              <span className="message-time">
-                {formatTime(msg.timestamp)}
-              </span>
-              {msg.sender === 'user' && (
-                <span className="message-status">
-                  <MessageTick status={msg.status || 'sent'} />
-                </span>
+      {messages.map((msg, index) => {
+        // Only user's OWN non-deleted messages can be deleted
+        const isOwnMessage = msg.sender === 'user' && msg.senderName === currentUsername;
+        const canDelete = isOwnMessage && !msg.isDeleted && msg.status !== 'pending' && msg._id;
+
+        return (
+          <div
+            key={msg._id || msg.tempId || `msg-${index}`}
+            className={`
+              message
+              ${msg.sender === 'user' ? 'message-user' : 'message-operator'}
+              message-animate
+              ${msg.status === 'pending' ? 'message-pending' : ''}
+              ${msg.isDeleted ? 'message-deleted' : ''}
+            `}
+            onMouseEnter={() => setHoveredMsgId(msg._id)}
+            onMouseLeave={() => setHoveredMsgId(null)}
+          >
+            {/* Delete button (shows on hover for own messages) */}
+            {canDelete && hoveredMsgId === msg._id && (
+              <button
+                className="message-delete-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteMessage(msg._id);
+                }}
+                title="Delete message"
+              >
+                🗑️
+              </button>
+            )}
+
+            <div className={`message-bubble ${isDarkMode ? 'dark' : ''}`}>
+              <div className="message-sender">{msg.senderName}</div>
+
+              {/* Show deleted placeholder OR content */}
+              {msg.isDeleted ? (
+                <DeletedMessage msg={msg} isOwnMessage={isOwnMessage} />
+              ) : (
+                <div className="message-content">{msg.content}</div>
               )}
+
+              <div className="message-footer">
+                <span className="message-time">
+                  {formatTime(msg.timestamp)}
+                </span>
+                {msg.sender === 'user' && !msg.isDeleted && (
+                  <span className="message-status">
+                    <MessageTick status={msg.status || 'sent'} />
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
-      {/* ── Typing Bubble - shows when operator is typing ── */}
       {operatorTyping && <TypingBubble isDarkMode={isDarkMode} />}
 
       <div ref={messagesEndRef} />

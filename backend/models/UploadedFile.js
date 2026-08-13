@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 
 const uploadedFileSchema = new mongoose.Schema({
-  // Who uploaded the file
   uploadedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -11,79 +10,81 @@ const uploadedFileSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-
-  // Original filename from user's computer (e.g., "my-report.pdf")
   originalName: {
     type: String,
     required: true
   },
-
-  // Stored filename on disk (unique, prefixed with timestamp)
-  // e.g., "1699234567-my-report.pdf"
   storedName: {
-    type: String,
-    required: true,
-    unique: true
-  },
-
-  // Full path on disk
-  filePath: {
     type: String,
     required: true
   },
-
-  // File type: pdf, docx, txt, csv, json, image, other
+  s3Bucket: {
+    type: String,
+    required: true
+  },
+  s3Key: {
+    type: String,
+    required: true
+  },
+  s3Url: {
+    type: String,
+    required: true
+  },
   fileType: {
     type: String,
     required: true
   },
-
-  // MIME type: application/pdf, image/png, etc.
   mimeType: {
     type: String,
     required: true
   },
-
-  // Size in bytes
   size: {
     type: Number,
     required: true
   },
-
-  // Parsed text content (for searchable/viewable files)
   parsedContent: {
     type: String,
     default: ''
   },
-
-  // Parsing status
   parseStatus: {
     type: String,
     enum: ['pending', 'success', 'failed', 'unsupported'],
     default: 'pending'
   },
-
   parseError: {
     type: String,
     default: null
   },
+  embeddingStatus: {
+    type: String,
+    enum: ['pending', 'success', 'failed', 'skipped'],
+    default: 'pending'
+  },
+  chunkCount: {
+    type: Number,
+    default: 0
+  },
 
-  // Custom tags for organizing
-  tags: [{
-    type: String
-  }],
+  // ⭐ NEW: Image-specific metadata
+  imageMetadata: {
+    width: Number,
+    height: Number,
+    format: String,
+    aspectRatio: String,
+    ocrText: String,
+    ocrConfidence: Number,
+    ocrWordCount: Number
+  },
 
-  // Notes about the file
+  tags: [{ type: String }],
   notes: {
     type: String,
     default: ''
   },
-
   uploadedAt: {
     type: Date,
     default: Date.now
   }
 });
 
-// Prevents OverwriteModelError on hot reload
 module.exports = mongoose.models.UploadedFile || mongoose.model('UploadedFile', uploadedFileSchema);

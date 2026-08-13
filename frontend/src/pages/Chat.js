@@ -22,14 +22,15 @@ const Chat = () => {
   const [activeConversation, setActiveConversation] = useState(null);
   const [connected, setConnected] = useState(false);
   const [serverOnline, setServerOnline] = useState(true);
-  // ── NEW: Operator typing state ──
   const [operatorTyping, setOperatorTyping] = useState(false);
 
   const activeConvRef = useRef(null);
   const messagesRef = useRef([]);
   const processingQueueRef = useRef(false);
-  // WHY: Store typing timeout so we can clear it if needed
   const typingTimeoutRef = useRef(null);
+  // ── NEW: Keep conversations in a ref so socket handlers see the latest list ──
+  // WHY: When deleting active conversation, we need to know what to switch to
+  const conversationsRef = useRef([]);
 
   const { user, logout } = useAuth();
   const { isDarkMode } = useTheme();
@@ -42,6 +43,10 @@ const Chat = () => {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   useEffect(() => {
     if (activeConversation && messages.length > 0) {
@@ -130,7 +135,6 @@ const Chat = () => {
 
     socket.on('disconnect', (reason) => {
       setConnected(false);
-      // Clear typing indicator if connection drops
       setOperatorTyping(false);
       if (reason === 'io server disconnect' || reason === 'transport close') {
         setServerOnline(false);
@@ -164,7 +168,6 @@ const Chat = () => {
     });
 
     socket.on('receive_message', (message) => {
-      // When operator sends message, stop the typing indicator
       setOperatorTyping(false);
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
@@ -243,16 +246,8 @@ const Chat = () => {
       );
     });
 
-    // ══════════════════════════════════════════════════════
-    //  NEW: Operator typing event handler
-    // ══════════════════════════════════════════════════════
-    // WHY: Server emits this when operator starts/stops typing
-    //      We show/hide the animated bubble accordingly
     socket.on('operator_typing', ({ isTyping }) => {
       setOperatorTyping(isTyping);
-
-      // Safety net: auto-clear after 4 seconds even if stop event is missed
-      // WHY: Network issues might cause the stop event to be lost
       if (isTyping) {
         if (typingTimeoutRef.current) {
           clearTimeout(typingTimeoutRef.current);
@@ -267,6 +262,51 @@ const Chat = () => {
       }
     });
 
+    // ══════════════════════════════════════════════════════
+    //  NEW: MESSAGE DELETED EVENT
+    // ══════════════════════════════════════════════════════
+    // WHY: When someone (user's other tab, or operator) deletes a message,
+    //      update this message in state to show the "deleted" placeholder
+    socket.on('message_deleted', ({ messageId, deletedBy, deletedAt, deletedByName }) => {
+      console.log(`🗑️ Message ${messageId} was deleted by ${deletedBy}`);
+      setMessages(prev =>
+        prev.map(msg =>
+          msg._id === messageId
+            ? {
+                ...msg,
+                content: '',
+                isDeleted: true,
+                deletedBy,
+                deletedAt,
+                deletedByName
+              }
+            : msg
+        )
+      );
+    });
+
+    // ══════════════════════════════════════════════════════
+    //  NEW: CONVERSATION DELETED EVENT
+    // ══════════════════════════════════════════════════════
+    // WHY: Sync deletion across user's own tabs
+    //      If another tab deleted a conversation, remove it here too
+    socket.on('conversation_deleted', ({ conversationId }) => {
+      console.log(`🗑️ Conversation ${conversationId} was deleted`);
+
+      setConversations(prev => prev.filter(c => c._id !== conversationId));
+
+      // If we were viewing the deleted conversation
+      if (activeConvRef.current === conversationId) {
+        const remaining = conversationsRef.current.filter(c => c._id !== conversationId);
+        if (remaining.length > 0) {
+          setActiveConversation(remaining[0]._id);
+        } else {
+          setActiveConversation(null);
+          setMessages([]);
+        }
+      }
+    });
+
     socket.on('error_message', ({ message }) => {
       console.error('Socket error:', message);
     });
@@ -274,7 +314,6 @@ const Chat = () => {
     loadConversations();
 
     return () => {
-      // Cleanup typing timeout on unmount
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
@@ -284,7 +323,6 @@ const Chat = () => {
 
   useEffect(() => {
     if (activeConversation) {
-      // Clear typing indicator when switching conversations
       setOperatorTyping(false);
       loadMessages(activeConversation);
       const socket = getSocket();
@@ -345,6 +383,65 @@ const Chat = () => {
     setActiveConversation(conversationId);
   };
 
+  // ══════════════════════════════════════════════════════
+  //  NEW: DELETE MESSAGE HANDLER
+  // ══════════════════════════════════════════════════════
+  // WHY: Sends WebSocket event to backend to soft-delete the message
+  //      Backend will broadcast to all tabs + operators
+  const handleDeleteMessage = (messageId) => {
+    const confirmed = window.confirm('Delete this message?');
+    if (!confirmed) return;
+
+    const socket = getSocket();
+    if (socket?.connected) {
+      socket.emit('delete_message', { messageId });
+    } else {
+      alert('Cannot delete: server is offline');
+    }
+  };
+
+  // ══════════════════════════════════════════════════════
+  //  NEW: DELETE CONVERSATION HANDLER
+  // ══════════════════════════════════════════════════════
+  // WHY: Uses REST API (DELETE endpoint) to hard-delete the conversation
+  //      and all its messages, then notifies operators via socket
+  const handleDeleteConversation = async (conversationId) => {
+    const confirmed = window.confirm(
+      'Delete this entire chat?\n\nAll messages will be permanently removed. This cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    try {
+      // Call REST API to delete
+      await api.delete(`/messages/conversations/${conversationId}`);
+
+      // Remove from local list
+      setConversations(prev => prev.filter(c => c._id !== conversationId));
+
+      // If it was the active conversation, switch to another
+      if (activeConversation === conversationId) {
+        const remaining = conversations.filter(c => c._id !== conversationId);
+        if (remaining.length > 0) {
+          setActiveConversation(remaining[0]._id);
+        } else {
+          setActiveConversation(null);
+          setMessages([]);
+        }
+      }
+
+      // Notify operators via socket so dashboards refresh
+      const socket = getSocket();
+      if (socket?.connected) {
+        socket.emit('conversation_deleted_notify', { conversationId });
+      }
+
+      console.log(`✅ Deleted conversation: ${conversationId}`);
+    } catch (err) {
+      console.error('Delete conversation error:', err);
+      alert('Failed to delete conversation. Please try again.');
+    }
+  };
+
   const handleLogout = () => {
     disconnectSocket();
     logout();
@@ -361,6 +458,7 @@ const Chat = () => {
         activeConversation={activeConversation}
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
+        onDeleteConversation={handleDeleteConversation}
         user={user}
         onLogout={handleLogout}
       />
@@ -371,7 +469,6 @@ const Chat = () => {
             <div className="chat-header-left">
               <h2>🤖 {activeConvTitle}</h2>
 
-              {/* Show typing or connection status */}
               {operatorTyping ? (
                 <span className="operator-typing-header">
                   Operator is typing
@@ -403,11 +500,12 @@ const Chat = () => {
           </div>
         )}
 
-        {/* Pass operatorTyping to MessageList */}
         <MessageList
           messages={messages}
           isDarkMode={isDarkMode}
           operatorTyping={operatorTyping}
+          currentUsername={user?.username}
+          onDeleteMessage={handleDeleteMessage}
         />
 
         <MessageInput

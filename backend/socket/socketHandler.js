@@ -4,13 +4,9 @@ const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { markAsDelivered, markConversationAsRead, deliverQueuedMessages } = require('./statusHandler');
 
-const connectedUsers = new Map();     // socketId → data
-const connectedOperators = new Map(); // socketId → data
-
-// ⭐ NEW: Track how many sockets each user has open
-// WHY: A user can have multiple tabs/windows open
-//      We only mark them offline when ALL tabs close
-const userSocketCount = new Map();    // userId → count
+const connectedUsers = new Map();
+const connectedOperators = new Map();
+const userSocketCount = new Map();
 
 const setupSocket = (io) => {
 
@@ -26,7 +22,6 @@ const setupSocket = (io) => {
     return found;
   };
 
-  // ⭐ NEW: Find ALL sockets for a user (not just one)
   const findAllUserSockets = (userId) => {
     const sockets = [];
     connectedUsers.forEach((data) => {
@@ -82,7 +77,6 @@ const setupSocket = (io) => {
         connectedUsers: connectedUsers.size
       });
 
-      // Deliver queued messages
       try {
         const count = await deliverQueuedMessages(io, connectedUsers);
         if (count > 0) console.log(`   📬 Auto-delivered ${count} queued messages`);
@@ -90,7 +84,7 @@ const setupSocket = (io) => {
         console.error('Error delivering queued messages:', err.message);
       }
 
-      // Operator sends message
+      // ── Operator sends message ──
       socket.on('operator_send_message', async (data) => {
         try {
           const { conversationId, content } = data;
@@ -122,8 +116,6 @@ const setupSocket = (io) => {
             timestamp: message.timestamp
           };
 
-          // ⭐ Send to ALL sockets of the target user (not just one)
-          // WHY: User might have multiple tabs open
           const targetUserSockets = findAllUserSockets(conversation.userId);
           targetUserSockets.forEach(userSocketData => {
             userSocketData.socket.emit('receive_message', msgData);
@@ -143,6 +135,7 @@ const setupSocket = (io) => {
         }
       });
 
+      // ── Operator typing ──
       socket.on('operator_typing', async (data) => {
         try {
           const { conversationId, isTyping } = data;
@@ -151,7 +144,6 @@ const setupSocket = (io) => {
           const conversation = await Conversation.findById(conversationId);
           if (!conversation) return;
 
-          // ⭐ Send typing to ALL of user's sockets
           const targetUserSockets = findAllUserSockets(conversation.userId);
           targetUserSockets.forEach(userSocketData => {
             userSocketData.socket.emit('operator_typing', {
@@ -165,6 +157,7 @@ const setupSocket = (io) => {
         }
       });
 
+      // ── Operator mark read ──
       socket.on('operator_mark_read', async (data) => {
         try {
           const { conversationId } = data;
@@ -173,17 +166,15 @@ const setupSocket = (io) => {
           const conversation = await Conversation.findById(conversationId);
           if (!conversation) return;
 
-          // ⭐ Notify ALL of user's sockets
           const targetUserSockets = findAllUserSockets(conversation.userId);
           const primarySocket = targetUserSockets[0]?.socket || null;
 
           const count = await markConversationAsRead(conversationId, io, primarySocket);
 
-          // Broadcast to remaining sockets
           targetUserSockets.slice(1).forEach(userSocketData => {
             userSocketData.socket.emit('messages_read', {
               conversationId,
-              messageIds: [], // client will refresh
+              messageIds: [],
               readAt: new Date()
             });
           });
@@ -193,6 +184,74 @@ const setupSocket = (io) => {
 
         } catch (err) {
           console.error('Mark read error:', err.message);
+        }
+      });
+
+      // ══════════════════════════════════════════════════════
+      //  ⭐ FIXED: Operator deletes their own message
+      // ══════════════════════════════════════════════════════
+      // WHY: Uses findByIdAndUpdate to bypass validation issue
+      socket.on('operator_delete_message', async ({ messageId }) => {
+        try {
+          const message = await Message.findById(messageId);
+          if (!message) {
+            socket.emit('error_message', { message: 'Message not found' });
+            return;
+          }
+
+          if (message.sender !== 'operator') {
+            socket.emit('error_message', { message: 'You can only delete operator messages' });
+            return;
+          }
+
+          if (message.isDeleted) return;
+
+          const originalContent = message.content;
+
+          // ⭐ FIX: Use findByIdAndUpdate with runValidators: false
+          // WHY: Bypasses "content required" validation for soft delete
+          const updated = await Message.findByIdAndUpdate(
+            messageId,
+            {
+              $set: {
+                originalContent: originalContent,
+                content: '',
+                isDeleted: true,
+                deletedBy: 'operator',
+                deletedAt: new Date()
+              }
+            },
+            {
+              new: true,
+              runValidators: false  // ← THE KEY FIX
+            }
+          );
+
+          console.log(`🗑️  Operator ${user.username} deleted message: "${originalContent}"`);
+
+          const deletedData = {
+            messageId: updated._id,
+            conversationId: updated.conversationId,
+            deletedBy: 'operator',
+            deletedAt: updated.deletedAt,
+            deletedByName: user.username
+          };
+
+          // Notify all operators
+          broadcastToOperators('message_deleted', deletedData);
+
+          // Notify the user
+          const conversation = await Conversation.findById(updated.conversationId);
+          if (conversation) {
+            const targetUserSockets = findAllUserSockets(conversation.userId);
+            targetUserSockets.forEach(sockData => {
+              sockData.socket.emit('message_deleted', deletedData);
+            });
+          }
+
+        } catch (error) {
+          console.error('Operator delete message error:', error);
+          socket.emit('error_message', { message: 'Failed to delete message' });
         }
       });
 
@@ -215,15 +274,12 @@ const setupSocket = (io) => {
       // ══════════════════════════════════════════════════════
       console.log(`\n👤 User connected: ${user.username} (${socket.id})`);
 
-      // ⭐ INCREMENT socket count for this user
       const userIdStr = user._id.toString();
       const currentCount = userSocketCount.get(userIdStr) || 0;
       userSocketCount.set(userIdStr, currentCount + 1);
 
       console.log(`   📊 ${user.username} now has ${currentCount + 1} tab(s) open`);
 
-      // ⭐ Only mark as online if this is their FIRST socket
-      // (avoids unnecessary DB write on every tab open)
       const wasOffline = currentCount === 0;
       if (wasOffline) {
         await User.findByIdAndUpdate(user._id, {
@@ -231,7 +287,6 @@ const setupSocket = (io) => {
           lastSeen: new Date()
         });
 
-        // Notify operators only if user JUST came online (was offline before)
         broadcastToOperators('user_status_change', {
           userId: user._id,
           username: user.username,
@@ -256,7 +311,7 @@ const setupSocket = (io) => {
 
       socket.emit('conversation_info', { conversationId: conversation._id });
 
-      // Deliver queued messages if operator online
+      // Deliver queued messages
       if (isAnyOperatorOnline()) {
         try {
           const userConvs = await Conversation.find({ userId: user._id });
@@ -287,6 +342,7 @@ const setupSocket = (io) => {
         }
       }
 
+      // ── User sends message ──
       socket.on('send_message', async (data) => {
         try {
           const { content, conversationId, tempId } = data;
@@ -316,7 +372,6 @@ const setupSocket = (io) => {
             lastMessageAt: new Date()
           });
 
-          // Confirm to the sending socket
           socket.emit('message_confirmed', {
             _id: message._id,
             tempId,
@@ -338,7 +393,6 @@ const setupSocket = (io) => {
             timestamp: message.timestamp
           };
 
-          // ⭐ Send to OTHER sockets of the same user (sync across tabs)
           const allUserSockets = findAllUserSockets(user._id);
           allUserSockets.forEach(userSocketData => {
             if (userSocketData.socket.id !== socket.id) {
@@ -359,7 +413,6 @@ const setupSocket = (io) => {
             setTimeout(async () => {
               try {
                 await markAsDelivered(message._id, io, socket);
-                // Also update other tabs
                 allUserSockets.forEach(userSocketData => {
                   if (userSocketData.socket.id !== socket.id) {
                     userSocketData.socket.emit('message_status_update', {
@@ -385,6 +438,7 @@ const setupSocket = (io) => {
         }
       });
 
+      // ── User typing ──
       socket.on('typing', () => {
         const userData = connectedUsers.get(socket.id);
         broadcastToOperators('user_typing', {
@@ -403,6 +457,84 @@ const setupSocket = (io) => {
         }, 3000);
       });
 
+      // ══════════════════════════════════════════════════════
+      //  ⭐ FIXED: User deletes their own message
+      // ══════════════════════════════════════════════════════
+      socket.on('delete_message', async ({ messageId }) => {
+        try {
+          const message = await Message.findById(messageId);
+          if (!message) {
+            socket.emit('error_message', { message: 'Message not found' });
+            return;
+          }
+
+          if (message.sender !== 'user' || message.senderName !== user.username) {
+            socket.emit('error_message', { message: 'You can only delete your own messages' });
+            return;
+          }
+
+          if (message.isDeleted) return;
+
+          const originalContent = message.content;
+
+          // ⭐ FIX: Use findByIdAndUpdate with runValidators: false
+          // WHY: Bypasses "content required" validation for soft delete
+          const updated = await Message.findByIdAndUpdate(
+            messageId,
+            {
+              $set: {
+                originalContent: originalContent,
+                content: '',
+                isDeleted: true,
+                deletedBy: 'user',
+                deletedAt: new Date()
+              }
+            },
+            {
+              new: true,
+              runValidators: false  // ← THE KEY FIX
+            }
+          );
+
+          console.log(`🗑️  User ${user.username} deleted message: "${originalContent}"`);
+
+          const deletedData = {
+            messageId: updated._id,
+            conversationId: updated.conversationId,
+            deletedBy: 'user',
+            deletedAt: updated.deletedAt,
+            deletedByName: user.username
+          };
+
+          // Notify ALL of user's own tabs
+          const allUserSockets = findAllUserSockets(user._id);
+          allUserSockets.forEach(sockData => {
+            sockData.socket.emit('message_deleted', deletedData);
+          });
+
+          // Notify all operators
+          broadcastToOperators('message_deleted', deletedData);
+
+        } catch (error) {
+          console.error('Delete message error:', error);
+          socket.emit('error_message', { message: 'Failed to delete message' });
+        }
+      });
+
+      // ── User deletes entire conversation notification ──
+      socket.on('conversation_deleted_notify', async ({ conversationId }) => {
+        try {
+          broadcastToOperators('conversation_deleted', {
+            conversationId,
+            username: user.username,
+            userId: user._id
+          });
+        } catch (error) {
+          console.error('Notify conversation delete error:', error);
+        }
+      });
+
+      // ── Switch conversation ──
       socket.on('switch_conversation', ({ conversationId }) => {
         const userData = connectedUsers.get(socket.id);
         if (userData) {
@@ -411,11 +543,10 @@ const setupSocket = (io) => {
         }
       });
 
-      // ⭐ FIXED: Only mark offline when ALL tabs close
+      // ── User disconnect ──
       socket.on('disconnect', async (reason) => {
         console.log(`\n👤 User socket disconnected: ${user.username} (${reason})`);
 
-        // Decrement socket count
         const userIdStr = user._id.toString();
         const currentCount = userSocketCount.get(userIdStr) || 1;
         const newCount = currentCount - 1;
@@ -423,7 +554,6 @@ const setupSocket = (io) => {
         connectedUsers.delete(socket.id);
 
         if (newCount <= 0) {
-          // No more sockets → user is truly offline
           userSocketCount.delete(userIdStr);
           console.log(`   ⚫ ${user.username} is now OFFLINE (all tabs closed)`);
 
@@ -436,14 +566,12 @@ const setupSocket = (io) => {
             console.error('Disconnect update error:', err.message);
           }
 
-          // Notify operators that user went offline
           broadcastToOperators('user_status_change', {
             userId: user._id,
             username: user.username,
             isOnline: false
           });
         } else {
-          // Still has other tabs open → stay online
           userSocketCount.set(userIdStr, newCount);
           console.log(`   🟢 ${user.username} still has ${newCount} tab(s) open - remaining online`);
         }

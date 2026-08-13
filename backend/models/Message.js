@@ -17,7 +17,17 @@ const messageSchema = new mongoose.Schema({
   },
   content: {
     type: String,
-    required: [true, 'Message content is required'],
+    // FIX: Use custom validator that allows empty content ONLY when isDeleted is true
+    // WHY: When a message is soft-deleted, we clear content but keep the record
+    validate: {
+      validator: function (value) {
+        // If deleted, empty content is OK
+        if (this.isDeleted) return true;
+        // Otherwise, content must be non-empty
+        return value && value.trim().length > 0;
+      },
+      message: 'Message content is required'
+    },
     trim: true
   },
   status: {
@@ -33,11 +43,30 @@ const messageSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+
+  // ── SOFT DELETE FIELDS ──
+  isDeleted: {
+    type: Boolean,
+    default: false
+  },
+  deletedBy: {
+    type: String,
+    enum: ['user', 'operator', null],
+    default: null
+  },
+  deletedAt: {
+    type: Date,
+    default: null
+  },
+  originalContent: {
+    type: String,
+    default: null
+  },
+
   timestamp: {
     type: Date,
     default: Date.now
   }
 });
 
-// THE FIX: reuse existing model if already compiled
 module.exports = mongoose.models.Message || mongoose.model('Message', messageSchema);

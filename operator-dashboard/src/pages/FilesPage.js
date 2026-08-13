@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
+import { useUpload } from '../context/UploadContext';
 import api from '../services/api';
 import FileUploader from '../components/FileUploader';
 
@@ -13,6 +14,7 @@ const FilesPage = ({ operator, onLogout }) => {
   const [loading, setLoading] = useState(false);
 
   const { isDarkMode, toggleDarkMode } = useTheme();
+  const { onUploadComplete } = useUpload();
   const navigate = useNavigate();
 
   const loadFiles = useCallback(async () => {
@@ -21,7 +23,6 @@ const FilesPage = ({ operator, onLogout }) => {
       const params = {};
       if (filterType !== 'all') params.fileType = filterType;
       if (searchQuery) params.search = searchQuery;
-
       const { data } = await api.get('/upload/files', { params });
       setFiles(data);
     } catch (err) {
@@ -45,10 +46,17 @@ const FilesPage = ({ operator, onLogout }) => {
     loadStats();
   }, [loadFiles, loadStats]);
 
-  const handleUploadComplete = (file) => {
-    setFiles(prev => [file, ...prev]);
-    loadStats();
-  };
+  // ⭐ Subscribe to upload completions
+  // WHY: When a background upload finishes, refresh the file list
+  useEffect(() => {
+    const unsubscribe = onUploadComplete((newFile) => {
+      console.log('📥 Upload completed, refreshing list');
+      loadFiles();
+      loadStats();
+    });
+
+    return unsubscribe;
+  }, [onUploadComplete, loadFiles, loadStats]);
 
   const handleViewFile = async (fileId) => {
     try {
@@ -64,7 +72,6 @@ const FilesPage = ({ operator, onLogout }) => {
       const response = await api.get(`/upload/download/${fileId}`, {
         responseType: 'blob'
       });
-      // Create blob URL and trigger download
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
@@ -81,14 +88,12 @@ const FilesPage = ({ operator, onLogout }) => {
 
   const handleDelete = async (fileId) => {
     if (!window.confirm('Delete this file permanently?')) return;
-
     try {
       await api.delete(`/upload/files/${fileId}`);
       setFiles(prev => prev.filter(f => f._id !== fileId));
       loadStats();
       if (selectedFile?._id === fileId) setSelectedFile(null);
     } catch (err) {
-      console.error('Delete error:', err);
       alert('Delete failed');
     }
   };
@@ -110,17 +115,8 @@ const FilesPage = ({ operator, onLogout }) => {
 
   const getFileIcon = (type) => {
     const icons = {
-      pdf: '📕',
-      docx: '📘',
-      doc: '📘',
-      txt: '📄',
-      markdown: '📝',
-      csv: '📊',
-      json: '📋',
-      xml: '📃',
-      image: '🖼️',
-      code: '💻',
-      other: '📎'
+      pdf: '📕', docx: '📘', doc: '📘', txt: '📄', markdown: '📝',
+      csv: '📊', json: '📋', xml: '📃', image: '🖼️', code: '💻', other: '📎'
     };
     return icons[type] || '📎';
   };
@@ -129,13 +125,9 @@ const FilesPage = ({ operator, onLogout }) => {
 
   return (
     <div className="files-page">
-      {/* ── TOP BAR ── */}
       <div className="fp-topbar">
         <div className="fp-brand">
-          <button
-            className="fp-back-btn"
-            onClick={() => navigate('/')}
-          >
+          <button className="fp-back-btn" onClick={() => navigate('/')}>
             ← Back
           </button>
           <div className="fp-logo">📁</div>
@@ -151,6 +143,12 @@ const FilesPage = ({ operator, onLogout }) => {
             <strong>{formatSize(stats.totalSize || 0)}</strong>
             <span>Total Size</span>
           </div>
+          {stats.embeddings && (
+            <div className="fp-stat">
+              <strong>{stats.embeddings.totalChunks || 0}</strong>
+              <span>Vectors</span>
+            </div>
+          )}
         </div>
 
         <div className="fp-topbar-actions">
@@ -161,12 +159,10 @@ const FilesPage = ({ operator, onLogout }) => {
         </div>
       </div>
 
-      {/* ── UPLOAD SECTION ── */}
       <div className="fp-upload-section">
-        <FileUploader onUploadComplete={handleUploadComplete} />
+        <FileUploader />
       </div>
 
-      {/* ── FILTERS ── */}
       <div className="fp-filters">
         <div className="fp-filter-tabs">
           {fileTypes.map(type => (
@@ -195,7 +191,6 @@ const FilesPage = ({ operator, onLogout }) => {
         </div>
       </div>
 
-      {/* ── FILES GRID ── */}
       <div className="fp-content">
         {loading ? (
           <div className="fp-loading">Loading files...</div>
@@ -213,9 +208,7 @@ const FilesPage = ({ operator, onLogout }) => {
                 className="file-card"
                 onClick={() => handleViewFile(file._id)}
               >
-                <div className="file-card-icon">
-                  {getFileIcon(file.fileType)}
-                </div>
+                <div className="file-card-icon">{getFileIcon(file.fileType)}</div>
                 <div className="file-card-body">
                   <div className="file-card-name">{file.originalName}</div>
                   <div className="file-card-meta">
@@ -231,11 +224,15 @@ const FilesPage = ({ operator, onLogout }) => {
                     {file.parseStatus === 'failed' && '❌ Parse failed'}
                     {file.parseStatus === 'unsupported' && '⚠️ Not parseable'}
                   </div>
+                  {file.embeddingStatus === 'success' && (
+                    <div className="file-card-status status-success">
+                      🧠 {file.chunkCount} vectors saved
+                    </div>
+                  )}
                 </div>
                 <div className="file-card-actions">
                   <button
                     className="fc-btn"
-                    title="Download"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDownload(file._id, file.originalName);
@@ -245,7 +242,6 @@ const FilesPage = ({ operator, onLogout }) => {
                   </button>
                   <button
                     className="fc-btn fc-delete"
-                    title="Delete"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(file._id);
@@ -260,65 +256,112 @@ const FilesPage = ({ operator, onLogout }) => {
         )}
       </div>
 
-      {/* ── FILE DETAIL MODAL ── */}
-      {selectedFile && (
-        <div className="file-modal-overlay" onClick={() => setSelectedFile(null)}>
-          <div className="file-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="file-modal-header">
-              <div className="file-modal-title">
-                <span className="file-modal-icon">{getFileIcon(selectedFile.fileType)}</span>
-                <div>
-                  <h2>{selectedFile.originalName}</h2>
-                  <p>
-                    {selectedFile.fileType.toUpperCase()} • {formatSize(selectedFile.size)} •
-                    Uploaded by {selectedFile.uploaderName} • {formatDate(selectedFile.uploadedAt)}
-                  </p>
-                </div>
-              </div>
-              <button
-                className="file-modal-close"
-                onClick={() => setSelectedFile(null)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="file-modal-body">
-              <h3>📄 Parsed Content</h3>
-              {selectedFile.parseStatus === 'success' && selectedFile.parsedContent ? (
-                <pre className="file-content-preview">{selectedFile.parsedContent}</pre>
-              ) : selectedFile.parseStatus === 'failed' ? (
-                <div className="file-parse-error">
-                  ❌ Parse failed: {selectedFile.parseError}
-                </div>
-              ) : selectedFile.parseStatus === 'unsupported' ? (
-                <div className="file-parse-warning">
-                  ⚠️ This file type doesn't support text extraction
-                </div>
-              ) : (
-                <div>⏳ Parsing in progress...</div>
-              )}
-            </div>
-
-            <div className="file-modal-footer">
-              <button
-                className="file-modal-btn download"
-                onClick={() => handleDownload(selectedFile._id, selectedFile.originalName)}
-              >
-                ⬇️ Download Original
-              </button>
-              <button
-                className="file-modal-btn delete"
-                onClick={() => handleDelete(selectedFile._id)}
-              >
-                🗑️ Delete File
-              </button>
-            </div>
+      {/* File Detail Modal */}
+      {/* File Detail Modal - UPDATED VERSION */}
+{selectedFile && (
+  <div className="file-modal-overlay" onClick={() => setSelectedFile(null)}>
+    <div className="file-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="file-modal-header">
+        <div className="file-modal-title">
+          <span className="file-modal-icon">{getFileIcon(selectedFile.fileType)}</span>
+          <div>
+            <h2>{selectedFile.originalName}</h2>
+            <p>
+              {selectedFile.fileType.toUpperCase()} • {formatSize(selectedFile.size)} •
+              Uploaded by {selectedFile.uploaderName} • {formatDate(selectedFile.uploadedAt)}
+            </p>
           </div>
         </div>
-      )}
+        <button
+          className="file-modal-close"
+          onClick={() => setSelectedFile(null)}
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="file-modal-body">
+        {/* ⭐ NEW: Image Preview */}
+        {selectedFile.fileType === 'image' && selectedFile.s3Url && (
+          <div className="image-preview-section">
+            <h3>🖼️ Image Preview</h3>
+            <img
+              src={selectedFile.s3Url}
+              alt={selectedFile.originalName}
+              className="image-preview"
+              onError={(e) => {
+                e.target.style.display = 'none';
+                e.target.nextSibling.style.display = 'block';
+              }}
+            />
+            <div className="image-preview-error" style={{ display: 'none' }}>
+              ⚠️ Image cannot be displayed (may be in private bucket)
+            </div>
+
+            {/* Image metadata */}
+            {selectedFile.imageMetadata && (
+              <div className="image-metadata">
+                <div className="image-meta-item">
+                  <strong>Dimensions:</strong> {selectedFile.imageMetadata.width} × {selectedFile.imageMetadata.height}
+                </div>
+                <div className="image-meta-item">
+                  <strong>Format:</strong> {selectedFile.imageMetadata.format?.toUpperCase()}
+                </div>
+                <div className="image-meta-item">
+                  <strong>Aspect Ratio:</strong> {selectedFile.imageMetadata.aspectRatio}
+                </div>
+                {selectedFile.imageMetadata.ocrWordCount > 0 && (
+                  <div className="image-meta-item">
+                    <strong>Text detected:</strong> {selectedFile.imageMetadata.ocrWordCount} words
+                    ({selectedFile.imageMetadata.ocrConfidence?.toFixed(0)}% confidence)
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Parsed Content */}
+        <h3>📄 Extracted Content</h3>
+        {selectedFile.parseStatus === 'success' && selectedFile.parsedContent ? (
+          <pre className="file-content-preview">{selectedFile.parsedContent}</pre>
+        ) : selectedFile.parseStatus === 'failed' ? (
+          <div className="file-parse-error">
+            ❌ Parse failed: {selectedFile.parseError}
+          </div>
+        ) : (
+          <div>⏳ No content extracted</div>
+        )}
+
+        {/* Vector info */}
+        {selectedFile.embeddingStatus === 'success' && (
+          <div className="vector-info-box">
+            🧠 {selectedFile.chunkCount} vector embeddings saved to Supabase
+            <br />
+            <small>This file is searchable via semantic search</small>
+          </div>
+        )}
+      </div>
+
+      <div className="file-modal-footer">
+        <button
+          className="file-modal-btn download"
+          onClick={() => handleDownload(selectedFile._id, selectedFile.originalName)}
+        >
+          ⬇️ Download Original
+        </button>
+        <button
+          className="file-modal-btn delete"
+          onClick={() => handleDelete(selectedFile._id)}
+        >
+          🗑️ Delete File
+        </button>
+      </div>
+    </div>
+  </div>
+)}
     </div>
   );
-};
+}
 
 export default FilesPage;

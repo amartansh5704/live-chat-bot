@@ -15,6 +15,9 @@ const ChatScreen = ({ operator }) => {
   const [connected, setConnected] = useState(false);
 
   const activeConversationRef = useRef(null);
+  // WHY: Keep conversations in ref so socket handlers see latest list
+  const conversationsRef = useRef([]);
+
   const { isDarkMode, toggleDarkMode } = useTheme();
   const navigate = useNavigate();
   const { userId } = useParams();
@@ -23,7 +26,11 @@ const ChatScreen = ({ operator }) => {
     activeConversationRef.current = activeConversationId;
   }, [activeConversationId]);
 
-  // Load user info + conversations
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  // ── Load user info + conversations ──
   const loadUserData = useCallback(async () => {
     try {
       // Get all users and find this one
@@ -35,7 +42,7 @@ const ChatScreen = ({ operator }) => {
       const { data: convsData } = await api.get(`/operator/conversations/${userId}`);
       setConversations(convsData);
 
-      // Auto-select first conversation
+      // Auto-select first conversation only if none selected
       if (convsData.length > 0 && !activeConversationRef.current) {
         setActiveConversationId(convsData[0]._id);
       }
@@ -61,7 +68,9 @@ const ChatScreen = ({ operator }) => {
     }
   }, []);
 
-  // Setup socket
+  // ══════════════════════════════════════════════════════
+  //  WEBSOCKET SETUP
+  // ══════════════════════════════════════════════════════
   useEffect(() => {
     if (!operator?.token) return;
 
@@ -75,20 +84,21 @@ const ChatScreen = ({ operator }) => {
     socket.on('connect', () => setConnected(true));
     socket.on('disconnect', () => setConnected(false));
 
+    // ── New user message ──
     socket.on('new_user_message', (data) => {
-      // If message is for this user + current conversation, add it
       if (data.userId === userId && data.conversationId === activeConversationRef.current) {
         setMessages(prev => {
           const exists = prev.some(m => m._id === data.message._id);
           return exists ? prev : [...prev, data.message];
         });
       }
-      // Update conversations list
+      // Refresh conversation list for unread counts
       if (data.userId === userId) {
         loadUserData();
       }
     });
 
+    // ── Our sent message was confirmed ──
     socket.on('message_sent_confirm', (message) => {
       if (message.conversationId === activeConversationRef.current) {
         setMessages(prev => {
@@ -99,6 +109,7 @@ const ChatScreen = ({ operator }) => {
       loadUserData();
     });
 
+    // ── Another operator sent a message ──
     socket.on('new_message_in_conversation', ({ conversationId, message }) => {
       if (conversationId === activeConversationRef.current) {
         setMessages(prev => {
@@ -108,6 +119,7 @@ const ChatScreen = ({ operator }) => {
       }
     });
 
+    // ── Messages marked as read ──
     socket.on('conversation_read', ({ conversationId }) => {
       if (conversationId === activeConversationRef.current) {
         setMessages(prev =>
@@ -117,12 +129,60 @@ const ChatScreen = ({ operator }) => {
       loadUserData();
     });
 
+    // ══════════════════════════════════════════════════════
+    //  MESSAGE DELETED EVENT
+    // ══════════════════════════════════════════════════════
+    // WHY: Update the deleted message to show "deleted" placeholder
+    //      Sync across all operators + user's own tabs
+    socket.on('message_deleted', ({ messageId, deletedBy, deletedAt, deletedByName }) => {
+      console.log(`🗑️ Message ${messageId} was deleted by ${deletedBy}`);
+      setMessages(prev =>
+        prev.map(msg =>
+          msg._id === messageId
+            ? {
+                ...msg,
+                content: '',
+                isDeleted: true,
+                deletedBy,
+                deletedAt,
+                deletedByName
+              }
+            : msg
+        )
+      );
+    });
+
+    // ══════════════════════════════════════════════════════
+    //  CONVERSATION DELETED EVENT
+    // ══════════════════════════════════════════════════════
+    // WHY: When user deletes conversation, remove it from operator's view
+    //      Auto-switch to another conversation if this one was active
+    socket.on('conversation_deleted', ({ conversationId, username }) => {
+      console.log(`🗑️ Conversation ${conversationId} deleted`);
+
+      // Remove from list
+      setConversations(prev => prev.filter(c => c._id !== conversationId));
+
+      // If we were viewing this conversation, switch or clear
+      if (activeConversationRef.current === conversationId) {
+        const remaining = conversationsRef.current.filter(c => c._id !== conversationId);
+        if (remaining.length > 0) {
+          setActiveConversationId(remaining[0]._id);
+        } else {
+          setActiveConversationId(null);
+          setMessages([]);
+        }
+      }
+    });
+
+    // ── User online/offline status ──
     socket.on('user_status_change', ({ userId: uid, isOnline }) => {
       if (uid === userId) {
         setUser(prev => prev ? { ...prev, isOnline } : prev);
       }
     });
 
+    // ── User is typing ──
     socket.on('user_typing', (data) => {
       if (data.userId === userId) {
         setUserTyping(data);
@@ -136,6 +196,7 @@ const ChatScreen = ({ operator }) => {
       }
     });
 
+    // ── Message status changed ──
     socket.on('message_status_changed', ({ messageId, status }) => {
       setMessages(prev =>
         prev.map(m => m._id === messageId ? { ...m, status } : m)
@@ -145,11 +206,12 @@ const ChatScreen = ({ operator }) => {
     loadUserData();
 
     return () => {
-      // Don't disconnect - keep socket alive when going back to users home
+      // Do NOT disconnect socket - keep it alive when navigating back
+      // The socket is shared across the whole app
     };
   }, [operator, userId, loadUserData]);
 
-  // Load messages when conversation changes
+  // ── Load messages when conversation changes ──
   useEffect(() => {
     if (activeConversationId) {
       loadMessages(activeConversationId);
@@ -158,6 +220,9 @@ const ChatScreen = ({ operator }) => {
         socket.emit('operator_viewing', { conversationId: activeConversationId });
       }
       setTimeout(() => handleMarkRead(activeConversationId), 1000);
+    } else {
+      // No active conversation - clear messages
+      setMessages([]);
     }
   }, [activeConversationId, loadMessages, handleMarkRead]);
 
@@ -170,8 +235,26 @@ const ChatScreen = ({ operator }) => {
   };
 
   const formatDate = (date) => {
+    if (!date) return '';
     const d = new Date(date);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // ══════════════════════════════════════════════════════
+  //  DELETE OPERATOR MESSAGE
+  // ══════════════════════════════════════════════════════
+  // WHY: Sends WebSocket event to soft-delete the message
+  //      Backend broadcasts to all operators and the target user
+  const handleDeleteMessage = (messageId) => {
+    const confirmed = window.confirm('Delete this message?');
+    if (!confirmed) return;
+
+    const socket = getSocket();
+    if (socket?.connected) {
+      socket.emit('operator_delete_message', { messageId });
+    } else {
+      alert('Cannot delete: not connected to server');
+    }
   };
 
   return (
@@ -244,6 +327,7 @@ const ChatScreen = ({ operator }) => {
             {conversations.length === 0 && (
               <div className="cs-no-convs">
                 <p>No conversations yet</p>
+                <small>User may have deleted all chats</small>
               </div>
             )}
           </div>
@@ -257,6 +341,8 @@ const ChatScreen = ({ operator }) => {
             activeConversation={activeConversationId}
             userTyping={userTyping}
             onMarkRead={handleMarkRead}
+            onDeleteMessage={handleDeleteMessage}
+            currentOperatorName={operator?.username}
           />
           <OperatorInput activeConversationId={activeConversationId} />
         </div>

@@ -6,14 +6,14 @@ const Sidebar = ({
   activeConversation,
   onSelectConversation,
   onNewChat,
+  onDeleteConversation,
   user,
   onLogout
 }) => {
   const { isDarkMode, toggleDarkMode } = useTheme();
-  // Track which conversation is being clicked for animation
   const [clickedId, setClickedId] = useState(null);
-  // Loading state while new chat is being created
   const [creatingChat, setCreatingChat] = useState(false);
+  const [hoveredId, setHoveredId] = useState(null);
 
   const formatDate = (date) => {
     const d = new Date(date);
@@ -42,10 +42,15 @@ const Sidebar = ({
     onSelectConversation(id);
   };
 
+  const handleDelete = (e, convId) => {
+    e.stopPropagation();
+    if (onDeleteConversation) {
+      onDeleteConversation(convId);
+    }
+  };
+
   return (
     <div className={`sidebar ${isDarkMode ? 'dark' : ''}`}>
-
-      {/* ── Header ── */}
       <div className="sidebar-header">
         <div className="user-info">
           <div className="user-avatar">
@@ -57,7 +62,6 @@ const Sidebar = ({
           </div>
         </div>
 
-        {/* Dark mode toggle button */}
         <button
           className="theme-toggle-btn"
           onClick={toggleDarkMode}
@@ -69,7 +73,6 @@ const Sidebar = ({
         </button>
       </div>
 
-      {/* ── Start New Chat Button ── */}
       <div className="new-chat-wrapper">
         <button
           className={`new-chat-btn ${creatingChat ? 'loading' : ''}`}
@@ -90,13 +93,11 @@ const Sidebar = ({
         </button>
       </div>
 
-      {/* ── Sidebar Title ── */}
       <div className="sidebar-title">
         <h4>💬 Conversations</h4>
         <span className="conv-count">{conversations.length}</span>
       </div>
 
-      {/* ── Conversation List ── */}
       <div className="conversation-list">
         {conversations.length === 0 && (
           <div className="no-conversations">
@@ -115,6 +116,8 @@ const Sidebar = ({
               ${clickedId === conv._id ? 'clicked' : ''}
             `}
             onClick={() => handleConversationClick(conv._id)}
+            onMouseEnter={() => setHoveredId(conv._id)}
+            onMouseLeave={() => setHoveredId(null)}
           >
             <div className="conv-avatar">
               {conv.title?.charAt(0) || '💬'}
@@ -135,11 +138,21 @@ const Sidebar = ({
                 <div className="active-dot"></div>
               )}
             </div>
+
+            {/* Delete button - shows on hover */}
+            {hoveredId === conv._id && (
+              <button
+                className="conv-delete-btn"
+                onClick={(e) => handleDelete(e, conv._id)}
+                title="Delete conversation"
+              >
+                🗑️
+              </button>
+            )}
           </div>
         ))}
       </div>
 
-      {/* ── Footer Logout ── */}
       <div className="sidebar-footer">
         <button className="logout-btn" onClick={onLogout}>
           🚪 Logout
