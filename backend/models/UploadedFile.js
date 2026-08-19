@@ -1,3 +1,4 @@
+// backend/models/UploadedFile.js
 const mongoose = require('mongoose');
 
 const uploadedFileSchema = new mongoose.Schema({
@@ -24,11 +25,11 @@ const uploadedFileSchema = new mongoose.Schema({
   },
   s3Key: {
     type: String,
-    required: true
+    default: ''        // empty until tus completes
   },
   s3Url: {
     type: String,
-    required: true
+    default: ''        // empty until tus completes
   },
   fileType: {
     type: String,
@@ -40,7 +41,7 @@ const uploadedFileSchema = new mongoose.Schema({
   },
   size: {
     type: Number,
-    required: true
+    default: 0
   },
   parsedContent: {
     type: String,
@@ -65,7 +66,28 @@ const uploadedFileSchema = new mongoose.Schema({
     default: 0
   },
 
-  // ⭐ NEW: Image-specific metadata
+  // ── NEW: Track upload phase separately ──
+  // WHY: Tus upload can be 'uploading' while embeddingStatus is 'pending'
+  //      Lets UI show correct state at each phase
+  uploadStatus: {
+    type: String,
+    enum: ['uploading', 'complete', 'failed'],
+    default: 'uploading'
+  },
+
+  tusUploadId: {
+  type: String,
+  default: null,
+  index: true
+},
+
+clientUploadId: {
+  type: String,
+  default: null,
+  index: true
+},
+
+  // Image-specific metadata
   imageMetadata: {
     width: Number,
     height: Number,
@@ -87,4 +109,5 @@ const uploadedFileSchema = new mongoose.Schema({
   }
 });
 
-module.exports = mongoose.models.UploadedFile || mongoose.model('UploadedFile', uploadedFileSchema);
+module.exports = mongoose.models.UploadedFile ||
+  mongoose.model('UploadedFile', uploadedFileSchema);

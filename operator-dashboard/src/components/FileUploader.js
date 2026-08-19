@@ -1,3 +1,6 @@
+// operator-dashboard/src/components/FileUploader.js
+// No changes needed here - it calls uploadFiles from context
+// which now uses tus internally
 import React, { useState, useRef } from 'react';
 import { useUpload } from '../context/UploadContext';
 
@@ -22,24 +25,16 @@ const FileUploader = () => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      uploadFiles(files);
-    }
+    if (files.length > 0) uploadFiles(files);
   };
 
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files);
     if (files.length > 0) {
       uploadFiles(files);
-      // Reset input so same file can be selected again
       e.target.value = null;
     }
-  };
-
-  const openFileDialog = () => {
-    fileInputRef.current?.click();
   };
 
   return (
@@ -49,7 +44,7 @@ const FileUploader = () => {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        onClick={openFileDialog}
+        onClick={() => fileInputRef.current?.click()}
       >
         <input
           ref={fileInputRef}
@@ -59,12 +54,11 @@ const FileUploader = () => {
           onChange={handleFileSelect}
           style={{ display: 'none' }}
         />
-
         <div className="uploader-icon">📁</div>
         <h3>Drop files here or click to browse</h3>
         <p>Supports: PDF, DOCX, TXT, CSV, JSON, Images and more</p>
         <p className="uploader-limit">
-          Max 20 MB per file • Files upload in background
+          Max 20 MB per file • Resumable upload • Auto-resumes on network failure
         </p>
       </div>
     </div>

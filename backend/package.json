@@ -5,18 +5,25 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "worker": "node workers/fileWorker.js",
+    "dev:worker": "nodemon workers/fileWorker.js",
+    "dev:all": "concurrently \"nodemon server.js\" \"nodemon workers/fileWorker.js\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1108.0",
     "@aws-sdk/s3-request-presigner": "^3.1108.0",
+    "@tus/s3-store": "^1.5.0",
+    "@tus/server": "^1.5.0",
     "@xenova/transformers": "^2.17.2",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.0.0",
     "cors": "^2.8.5",
     "csv-parse": "^7.0.2",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "image-size": "^2.0.2",
+    "ioredis": "^5.3.2",
     "jsonwebtoken": "^8.5.1",
     "mammoth": "^1.12.1",
     "mongoose": "^7.6.3",
@@ -33,6 +40,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "concurrently": "^8.2.0",
     "nodemon": "^3.0.1"
   }
 }
