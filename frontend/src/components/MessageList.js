@@ -1,6 +1,6 @@
+// frontend/src/components/MessageList.js
 import React, { useEffect, useRef, useState } from 'react';
 
-// ── Tick Icons (same as before) ──
 const MessageTick = ({ status }) => {
   if (!status) return null;
 
@@ -51,10 +51,10 @@ const MessageTick = ({ status }) => {
 };
 
 // ── Typing Bubble ──
-const TypingBubble = ({ isDarkMode }) => (
+const TypingBubble = ({ isDarkMode, label = 'Operator' }) => (
   <div className="message message-operator typing-bubble-wrapper">
     <div className={`message-bubble typing-bubble ${isDarkMode ? 'dark' : ''}`}>
-      <div className="message-sender">Operator</div>
+      <div className="message-sender">{label}</div>
       <div className="typing-dots">
         <span className="typing-dot"></span>
         <span className="typing-dot"></span>
@@ -65,7 +65,6 @@ const TypingBubble = ({ isDarkMode }) => (
 );
 
 // ── Deleted Message Placeholder ──
-// WHY: When a message is soft-deleted, show this instead of the content
 const DeletedMessage = ({ msg, isOwnMessage }) => {
   const deletedByLabel = msg.deletedBy === 'user'
     ? (isOwnMessage ? 'you' : 'sender')
@@ -81,11 +80,39 @@ const DeletedMessage = ({ msg, isOwnMessage }) => {
   );
 };
 
+// ── Sources Accordion ──
+const MessageSources = ({ sources }) => {
+  const [open, setOpen] = useState(false);
+  if (!sources || sources.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: '8px', fontSize: '11px', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '4px' }}>
+      <span
+        onClick={() => setOpen(!open)}
+        style={{ cursor: 'pointer', color: '#8b5cf6', fontWeight: 600, userSelect: 'none' }}
+      >
+        📚 {sources.length} source{sources.length > 1 ? 's' : ''} referenced {open ? '▲' : '▼'}
+      </span>
+      {open && (
+        <ul style={{ margin: '4px 0 0 0', paddingLeft: '16px', color: '#aaa' }}>
+          {sources.map((s, idx) => (
+            <li key={idx}>
+              {s.fileName} {s.similarity ? `(${s.similarity}% match)` : ''}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
 // ── Main MessageList ──
 const MessageList = ({
   messages,
+  streamingMessage,
   isDarkMode,
   operatorTyping,
+  aiTyping,
   currentUsername,
   onDeleteMessage
 }) => {
@@ -94,7 +121,7 @@ const MessageList = ({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, operatorTyping]);
+  }, [messages, streamingMessage, operatorTyping, aiTyping]);
 
   const formatTime = (timestamp) => {
     if (!timestamp) return '';
@@ -106,16 +133,15 @@ const MessageList = ({
 
   return (
     <div className={`message-list ${isDarkMode ? 'dark' : ''}`}>
-      {messages.length === 0 && !operatorTyping && (
+      {messages.length === 0 && !operatorTyping && !aiTyping && !streamingMessage && (
         <div className="no-messages">
           <div className="no-messages-icon">💬</div>
           <p>No messages yet</p>
-          <small>Start the conversation!</small>
+          <small>Ask a question based on uploaded documents!</small>
         </div>
       )}
 
       {messages.map((msg, index) => {
-        // Only user's OWN non-deleted messages can be deleted
         const isOwnMessage = msg.sender === 'user' && msg.senderName === currentUsername;
         const canDelete = isOwnMessage && !msg.isDeleted && msg.status !== 'pending' && msg._id;
 
@@ -132,7 +158,6 @@ const MessageList = ({
             onMouseEnter={() => setHoveredMsgId(msg._id)}
             onMouseLeave={() => setHoveredMsgId(null)}
           >
-            {/* Delete button (shows on hover for own messages) */}
             {canDelete && hoveredMsgId === msg._id && (
               <button
                 className="message-delete-btn"
@@ -147,13 +172,33 @@ const MessageList = ({
             )}
 
             <div className={`message-bubble ${isDarkMode ? 'dark' : ''}`}>
-              <div className="message-sender">{msg.senderName}</div>
+              <div className="message-sender" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span>{msg.senderName}</span>
+                {msg.isAI && (
+                  <span style={{
+                    fontSize: '9px',
+                    padding: '2px 5px',
+                    borderRadius: '4px',
+                    background: '#8b5cf6',
+                    color: '#fff',
+                    fontWeight: 700
+                  }}>
+                    AI
+                  </span>
+                )}
+              </div>
 
-              {/* Show deleted placeholder OR content */}
               {msg.isDeleted ? (
                 <DeletedMessage msg={msg} isOwnMessage={isOwnMessage} />
               ) : (
-                <div className="message-content">{msg.content}</div>
+                <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>
+                  {msg.content}
+                </div>
+              )}
+
+              {/* Source citations */}
+              {msg.isAI && msg.aiSources && (
+                <MessageSources sources={msg.aiSources} />
               )}
 
               <div className="message-footer">
@@ -171,7 +216,41 @@ const MessageList = ({
         );
       })}
 
-      {operatorTyping && <TypingBubble isDarkMode={isDarkMode} />}
+      {/* ⭐ Real-time Streaming AI Message */}
+      {streamingMessage && (
+        <div className="message message-operator message-animate">
+          <div className={`message-bubble ${isDarkMode ? 'dark' : ''}`}>
+            <div className="message-sender" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span>{streamingMessage.senderName}</span>
+              <span style={{
+                fontSize: '9px',
+                padding: '2px 5px',
+                borderRadius: '4px',
+                background: '#8b5cf6',
+                color: '#fff',
+                fontWeight: 700
+              }}>
+                AI STREAMING...
+              </span>
+            </div>
+
+            <div className="message-content" style={{ whiteSpace: 'pre-wrap' }}>
+              {streamingMessage.content}
+              <span className="typing-cursor" style={{ display: 'inline-block', width: '6px', height: '14px', background: '#8b5cf6', marginLeft: '3px', verticalAlign: 'middle', animation: 'blink 1s infinite' }}></span>
+            </div>
+
+            <div className="message-footer">
+              <span className="message-time">Just now</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Searching Bubble */}
+      {aiTyping && !streamingMessage && <TypingBubble isDarkMode={isDarkMode} label="🤖 AI Searching Knowledge Base..." />}
+
+      {/* Human Operator Typing Bubble */}
+      {operatorTyping && <TypingBubble isDarkMode={isDarkMode} label="Operator" />}
 
       <div ref={messagesEndRef} />
     </div>

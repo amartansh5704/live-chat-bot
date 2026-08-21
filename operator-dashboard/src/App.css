@@ -2312,3 +2312,229 @@ body.dark-mode .error-msg { background: #3a1a1a; color: #ff8080; }
   font-weight: 500;
   text-align: center;
 }
+
+/* =========================================================
+   CUSTOM SCROLLBARS (Chat Window & Conversations List)
+   ========================================================= */
+
+/* Global Webkit Scrollbar Styling (Chrome, Edge, Safari, Brave) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.35); /* Sleek purple accent */
+  border-radius: 8px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.7);
+}
+
+/* ── 1. Chat Messages Window Scroll Area ── */
+.chat-window-messages {
+  flex: 1 1 auto;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  max-height: 100%;
+  padding: 16px 20px;
+  scroll-behavior: smooth;
+  /* Firefox Scrollbar Support */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.4) transparent;
+}
+
+/* ── 2. Conversations / User Sidebar Scroll Area ── */
+.chat-sidebar,
+.conversations-list,
+.user-list,
+.cs-sidebar-list,
+.sidebar-conversations,
+.users-sidebar {
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  max-height: calc(100vh - 120px);
+  /* Firefox Scrollbar Support */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 92, 246, 0.4) transparent;
+}
+
+/* ── Dark Mode Scrollbar Overrides ── */
+.dark ::-webkit-scrollbar-track,
+body.dark-mode ::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dark ::-webkit-scrollbar-thumb,
+body.dark-mode ::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.45);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover,
+body.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: rgba(167, 139, 250, 0.8);
+}
+
+/* =========================================================
+   OPERATOR CHAT SCREEN - CORRECT LAYOUT + SCROLLING
+   ========================================================= */
+
+/* Root lock */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Full screen chat layout */
+.chat-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* ── TOP BAR (Back button stays here at the top) ── */
+.cs-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;          /* fixed height, never shrinks */
+  height: 60px;
+  min-height: 60px;
+  padding: 0 16px;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  z-index: 10;
+}
+
+.cs-back-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.cs-user-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cs-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ── BODY (sidebar + chat side by side) ── */
+.cs-body {
+  display: flex;
+  flex: 1 1 0%;
+  min-height: 0;           /* CRITICAL for nested scroll */
+  overflow: hidden;
+}
+
+/* ── LEFT: Conversations Sidebar ── */
+.cs-convs-sidebar {
+  width: 280px;
+  min-width: 260px;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;        /* header fixed, list scrolls */
+}
+
+.cs-convs-header {
+  flex: 0 0 auto;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* THIS is the scrollable conversations list */
+.cs-convs-list {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(233, 30, 99, 0.4) transparent;
+}
+
+.cs-convs-list::-webkit-scrollbar {
+  width: 5px;
+}
+.cs-convs-list::-webkit-scrollbar-thumb {
+  background: rgba(233, 30, 99, 0.4);
+  border-radius: 4px;
+}
+.cs-convs-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(233, 30, 99, 0.75);
+}
+
+/* ── RIGHT: Chat Area ── */
+.cs-chat-area {
+  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ChatWindow fills available space */
+.cs-chat-area .chat-window {
+  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Chat header stays fixed */
+.cs-chat-area .chat-window-header {
+  flex: 0 0 auto;
+}
+
+/* Messages scroll independently */
+.cs-chat-area .chat-window-messages {
+  flex: 1 1 0%;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  padding: 16px 20px;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(233, 30, 99, 0.4) transparent;
+}
+
+.cs-chat-area .chat-window-messages::-webkit-scrollbar {
+  width: 5px;
+}
+.cs-chat-area .chat-window-messages::-webkit-scrollbar-thumb {
+  background: rgba(233, 30, 99, 0.4);
+  border-radius: 4px;
+}
+.cs-chat-area .chat-window-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(233, 30, 99, 0.75);
+}
+
+/* Input bar stays fixed at bottom */
+.cs-chat-area .operator-input {
+  flex: 0 0 auto;
+}

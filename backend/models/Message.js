@@ -1,3 +1,4 @@
+// backend/models/Message.js
 const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema({
@@ -17,13 +18,9 @@ const messageSchema = new mongoose.Schema({
   },
   content: {
     type: String,
-    // FIX: Use custom validator that allows empty content ONLY when isDeleted is true
-    // WHY: When a message is soft-deleted, we clear content but keep the record
     validate: {
       validator: function (value) {
-        // If deleted, empty content is OK
         if (this.isDeleted) return true;
-        // Otherwise, content must be non-empty
         return value && value.trim().length > 0;
       },
       message: 'Message content is required'
@@ -60,6 +57,33 @@ const messageSchema = new mongoose.Schema({
   },
   originalContent: {
     type: String,
+    default: null
+  },
+
+  // ══════════════════════════════════════════
+  //  NEW: AI FIELDS
+  // ══════════════════════════════════════════
+  // WHY: Distinguish AI replies from human operator replies
+  //      Operator can see which messages AI generated
+  //      Can review, edit, or delete AI responses
+  isAI: {
+    type: Boolean,
+    default: false
+  },
+
+  // Which documents the AI used to generate this answer
+  // WHY: Transparency - operator can verify AI sources
+  aiSources: [{
+    fileName: String,
+    similarity: Number,    // percentage match
+    chunkIndex: Number
+  }],
+
+  // Confidence score of the AI response
+  // WHY: Low confidence = AI was guessing
+  //      Operator should review low-confidence replies
+  aiConfidence: {
+    type: Number,
     default: null
   },
 

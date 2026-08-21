@@ -1,43 +1,49 @@
+// backend/socket/socketHandler.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const { markAsDelivered, markConversationAsRead, deliverQueuedMessages } = require('./statusHandler');
+const { processUserMessage, shouldTriggerAI } = require('../services/ragService');
 
+// ── Global Socket State ──
 const connectedUsers = new Map();
 const connectedOperators = new Map();
 const userSocketCount = new Map();
+const activeAIStreams = new Map(); // conversationId -> boolean
+
+// ── Global Helper Functions (Accessible to all handlers & AI trigger) ──
+const isAnyOperatorOnline = () => connectedOperators.size > 0;
+
+const findUserSocket = (userId) => {
+  let found = null;
+  connectedUsers.forEach((data) => {
+    if (data.user._id.toString() === userId.toString()) {
+      found = data;
+    }
+  });
+  return found;
+};
+
+const findAllUserSockets = (userId) => {
+  const sockets = [];
+  connectedUsers.forEach((data) => {
+    if (data.user._id.toString() === userId.toString()) {
+      sockets.push(data);
+    }
+  });
+  return sockets;
+};
+
+const broadcastToOperators = (event, data) => {
+  connectedOperators.forEach((opData) => {
+    if (opData.socket && opData.socket.connected) {
+      opData.socket.emit(event, data);
+    }
+  });
+};
 
 const setupSocket = (io) => {
-
-  const isAnyOperatorOnline = () => connectedOperators.size > 0;
-
-  const findUserSocket = (userId) => {
-    let found = null;
-    connectedUsers.forEach((data) => {
-      if (data.user._id.toString() === userId.toString()) {
-        found = data;
-      }
-    });
-    return found;
-  };
-
-  const findAllUserSockets = (userId) => {
-    const sockets = [];
-    connectedUsers.forEach((data) => {
-      if (data.user._id.toString() === userId.toString()) {
-        sockets.push(data);
-      }
-    });
-    return sockets;
-  };
-
-  const broadcastToOperators = (event, data) => {
-    connectedOperators.forEach((opData) => {
-      opData.socket.emit(event, data);
-    });
-  };
-
   // ── Socket Auth Middleware ──
   io.use(async (socket, next) => {
     try {
@@ -93,12 +99,24 @@ const setupSocket = (io) => {
           const conversation = await Conversation.findById(conversationId);
           if (!conversation) return;
 
+          // Cancel AI stream if operator types
+          if (activeAIStreams.has(conversationId)) {
+            console.log(`   🛑 Operator ${user.username} took over from AI in conv ${conversationId}`);
+            activeAIStreams.delete(conversationId);
+
+            const targetUserSockets = findAllUserSockets(conversation.userId);
+            targetUserSockets.forEach(us => {
+              us.socket.emit('ai_typing', { conversationId, isTyping: false });
+            });
+          }
+
           const message = await Message.create({
             conversationId,
             sender: 'operator',
             senderName: user.username,
             content: content.trim(),
-            status: 'delivered'
+            status: 'delivered',
+            isAI: false
           });
 
           await Conversation.findByIdAndUpdate(conversationId, {
@@ -113,6 +131,7 @@ const setupSocket = (io) => {
             senderName: user.username,
             content: message.content,
             status: 'delivered',
+            isAI: false,
             timestamp: message.timestamp
           };
 
@@ -120,12 +139,6 @@ const setupSocket = (io) => {
           targetUserSockets.forEach(userSocketData => {
             userSocketData.socket.emit('receive_message', msgData);
           });
-
-          if (targetUserSockets.length > 0) {
-            console.log(`   ✅ Delivered to ${conversation.username} (${targetUserSockets.length} tab${targetUserSockets.length > 1 ? 's' : ''})`);
-          } else {
-            console.log(`   ⚠️  ${conversation.username} is offline`);
-          }
 
           socket.emit('message_sent_confirm', msgData);
           broadcastToOperators('new_message_in_conversation', { conversationId, message: msgData });
@@ -179,7 +192,6 @@ const setupSocket = (io) => {
             });
           });
 
-          console.log(`   ✅ Marked ${count} messages as read in conv ${conversationId}`);
           broadcastToOperators('conversation_read', { conversationId, readCount: count });
 
         } catch (err) {
@@ -187,10 +199,7 @@ const setupSocket = (io) => {
         }
       });
 
-      // ══════════════════════════════════════════════════════
-      //  ⭐ FIXED: Operator deletes their own message
-      // ══════════════════════════════════════════════════════
-      // WHY: Uses findByIdAndUpdate to bypass validation issue
+      // ── Operator deletes message ──
       socket.on('operator_delete_message', async ({ messageId }) => {
         try {
           const message = await Message.findById(messageId);
@@ -208,8 +217,6 @@ const setupSocket = (io) => {
 
           const originalContent = message.content;
 
-          // ⭐ FIX: Use findByIdAndUpdate with runValidators: false
-          // WHY: Bypasses "content required" validation for soft delete
           const updated = await Message.findByIdAndUpdate(
             messageId,
             {
@@ -221,13 +228,8 @@ const setupSocket = (io) => {
                 deletedAt: new Date()
               }
             },
-            {
-              new: true,
-              runValidators: false  // ← THE KEY FIX
-            }
+            { new: true, runValidators: false }
           );
-
-          console.log(`🗑️  Operator ${user.username} deleted message: "${originalContent}"`);
 
           const deletedData = {
             messageId: updated._id,
@@ -237,10 +239,8 @@ const setupSocket = (io) => {
             deletedByName: user.username
           };
 
-          // Notify all operators
           broadcastToOperators('message_deleted', deletedData);
 
-          // Notify the user
           const conversation = await Conversation.findById(updated.conversationId);
           if (conversation) {
             const targetUserSockets = findAllUserSockets(conversation.userId);
@@ -277,8 +277,6 @@ const setupSocket = (io) => {
       const userIdStr = user._id.toString();
       const currentCount = userSocketCount.get(userIdStr) || 0;
       userSocketCount.set(userIdStr, currentCount + 1);
-
-      console.log(`   📊 ${user.username} now has ${currentCount + 1} tab(s) open`);
 
       const wasOffline = currentCount === 0;
       if (wasOffline) {
@@ -333,16 +331,14 @@ const setupSocket = (io) => {
               deliveredAt: new Date()
             });
           }
-
-          if (queued.length > 0) {
-            console.log(`   📬 Delivered ${queued.length} queued messages to ${user.username}`);
-          }
         } catch (err) {
           console.error('Queue delivery error:', err.message);
         }
       }
 
-      // ── User sends message ──
+      // ══════════════════════════════════════════════════════
+      //  USER SENDS MESSAGE (WITH AI RAG INTEGRATION)
+      // ══════════════════════════════════════════════════════
       socket.on('send_message', async (data) => {
         try {
           const { content, conversationId, tempId } = data;
@@ -359,6 +355,7 @@ const setupSocket = (io) => {
             connectedUsers.set(socket.id, userData);
           }
 
+          // Save user message to MongoDB
           const message = await Message.create({
             conversationId: targetConvId,
             sender: 'user',
@@ -372,6 +369,7 @@ const setupSocket = (io) => {
             lastMessageAt: new Date()
           });
 
+          // Confirm to sender tab
           socket.emit('message_confirmed', {
             _id: message._id,
             tempId,
@@ -393,6 +391,7 @@ const setupSocket = (io) => {
             timestamp: message.timestamp
           };
 
+          // Sync across user's other tabs
           const allUserSockets = findAllUserSockets(user._id);
           allUserSockets.forEach(userSocketData => {
             if (userSocketData.socket.id !== socket.id) {
@@ -400,6 +399,7 @@ const setupSocket = (io) => {
             }
           });
 
+          // Send to operators
           broadcastToOperators('new_user_message', {
             conversationId: targetConvId,
             userId: user._id,
@@ -409,6 +409,7 @@ const setupSocket = (io) => {
 
           console.log(`   💬 ${user.username}: ${content.trim()}`);
 
+          // Mark as delivered if operator is online
           if (isAnyOperatorOnline()) {
             setTimeout(async () => {
               try {
@@ -431,6 +432,15 @@ const setupSocket = (io) => {
                 console.error('Deliver error:', err.message);
               }
             }, 500);
+          }
+
+          // ══════════════════════════════════════════════════
+          //  ⭐ AI RAG TRIGGER
+          // ══════════════════════════════════════════════════
+          if (shouldTriggerAI(content)) {
+            triggerAIResponse(targetConvId, content, user._id, io, socket).catch(err => {
+              console.error('AI trigger error:', err.message);
+            });
           }
 
         } catch (error) {
@@ -457,9 +467,7 @@ const setupSocket = (io) => {
         }, 3000);
       });
 
-      // ══════════════════════════════════════════════════════
-      //  ⭐ FIXED: User deletes their own message
-      // ══════════════════════════════════════════════════════
+      // ── User deletes message ──
       socket.on('delete_message', async ({ messageId }) => {
         try {
           const message = await Message.findById(messageId);
@@ -477,8 +485,6 @@ const setupSocket = (io) => {
 
           const originalContent = message.content;
 
-          // ⭐ FIX: Use findByIdAndUpdate with runValidators: false
-          // WHY: Bypasses "content required" validation for soft delete
           const updated = await Message.findByIdAndUpdate(
             messageId,
             {
@@ -490,13 +496,8 @@ const setupSocket = (io) => {
                 deletedAt: new Date()
               }
             },
-            {
-              new: true,
-              runValidators: false  // ← THE KEY FIX
-            }
+            { new: true, runValidators: false }
           );
-
-          console.log(`🗑️  User ${user.username} deleted message: "${originalContent}"`);
 
           const deletedData = {
             messageId: updated._id,
@@ -506,13 +507,11 @@ const setupSocket = (io) => {
             deletedByName: user.username
           };
 
-          // Notify ALL of user's own tabs
           const allUserSockets = findAllUserSockets(user._id);
           allUserSockets.forEach(sockData => {
             sockData.socket.emit('message_deleted', deletedData);
           });
 
-          // Notify all operators
           broadcastToOperators('message_deleted', deletedData);
 
         } catch (error) {
@@ -521,7 +520,6 @@ const setupSocket = (io) => {
         }
       });
 
-      // ── User deletes entire conversation notification ──
       socket.on('conversation_deleted_notify', async ({ conversationId }) => {
         try {
           broadcastToOperators('conversation_deleted', {
@@ -534,7 +532,6 @@ const setupSocket = (io) => {
         }
       });
 
-      // ── Switch conversation ──
       socket.on('switch_conversation', ({ conversationId }) => {
         const userData = connectedUsers.get(socket.id);
         if (userData) {
@@ -543,7 +540,6 @@ const setupSocket = (io) => {
         }
       });
 
-      // ── User disconnect ──
       socket.on('disconnect', async (reason) => {
         console.log(`\n👤 User socket disconnected: ${user.username} (${reason})`);
 
@@ -555,7 +551,6 @@ const setupSocket = (io) => {
 
         if (newCount <= 0) {
           userSocketCount.delete(userIdStr);
-          console.log(`   ⚫ ${user.username} is now OFFLINE (all tabs closed)`);
 
           try {
             await User.findByIdAndUpdate(user._id, {
@@ -573,11 +568,86 @@ const setupSocket = (io) => {
           });
         } else {
           userSocketCount.set(userIdStr, newCount);
-          console.log(`   🟢 ${user.username} still has ${newCount} tab(s) open - remaining online`);
         }
       });
     }
   });
+};
+
+// ══════════════════════════════════════════════════════════
+//  AI RAG TRIGGER FUNCTION
+// ══════════════════════════════════════════════════════════
+const triggerAIResponse = async (conversationId, userMessage, userId, io, userSocket) => {
+  try {
+    if (activeAIStreams.has(conversationId)) {
+      console.log(`   🛑 Cancelling previous AI stream for conv ${conversationId}`);
+      activeAIStreams.delete(conversationId);
+    }
+
+    activeAIStreams.set(conversationId, true);
+
+    const enhancedSocket = {
+      emit: (event, data) => {
+        // Forward to user tab
+        if (userSocket && userSocket.connected) {
+          userSocket.emit(event, data);
+        }
+
+        // Forward to all connected operator tabs
+        if (event === 'ai_typing') {
+          broadcastToOperators('ai_response_typing', {
+            conversationId,
+            isTyping: data.isTyping
+          });
+        }
+
+        if (event === 'ai_message_chunk') {
+          broadcastToOperators('ai_response_chunk', {
+            conversationId,
+            content: data.content,
+            fullText: data.fullText
+          });
+        }
+
+        if (event === 'ai_message_complete') {
+          broadcastToOperators('ai_response_complete', {
+            conversationId,
+            messageId: data.messageId,
+            fullText: data.fullText,
+            sources: data.sources,
+            senderName: process.env.AI_SYSTEM_NAME || 'Support Assistant'
+          });
+        }
+
+        if (event === 'ai_message_error') {
+          broadcastToOperators('ai_response_error', {
+            conversationId,
+            error: data.error
+          });
+        }
+      }
+    };
+
+    const result = await processUserMessage(
+      userMessage,
+      conversationId,
+      io,
+      enhancedSocket
+    );
+
+    activeAIStreams.delete(conversationId);
+
+    if (result?.success && result.fullText) {
+      await Conversation.findByIdAndUpdate(conversationId, {
+        lastMessage: result.fullText.substring(0, 100),
+        lastMessageAt: new Date()
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ AI trigger error:', error.message);
+    activeAIStreams.delete(conversationId);
+  }
 };
 
 module.exports = setupSocket;

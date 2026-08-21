@@ -1,3 +1,4 @@
+// operator-dashboard/src/components/OperatorInput.js
 import React, { useState, useRef, useCallback } from 'react';
 import { getSocket } from '../services/socket';
 
@@ -49,6 +50,8 @@ const OperatorInput = ({ activeConversationId }) => {
       emitTyping(false);
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
 
+      // ⭐ Send message
+      // Note: This automatically cancels any active AI streams for this conversation on the backend
       socket.emit('operator_send_message', {
         conversationId: activeConversationId,
         content: message.trim()
@@ -73,7 +76,7 @@ const OperatorInput = ({ activeConversationId }) => {
         value={message}
         onChange={handleChange}
         onKeyPress={handleKeyPress}
-        placeholder="Type a reply..."
+        placeholder="Type a reply... (Typing will pause the AI)"
         autoFocus
       />
       <button type="submit" disabled={!message.trim()}>

@@ -1,3 +1,4 @@
+// frontend/src/pages/Chat.js
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -24,12 +25,15 @@ const Chat = () => {
   const [serverOnline, setServerOnline] = useState(true);
   const [operatorTyping, setOperatorTyping] = useState(false);
 
+  // ⭐ NEW: AI streaming and typing states
+  const [aiTyping, setAiTyping] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState(null);
+
   const activeConvRef = useRef(null);
   const messagesRef = useRef([]);
   const processingQueueRef = useRef(false);
   const typingTimeoutRef = useRef(null);
-  // ── NEW: Keep conversations in a ref so socket handlers see the latest list ──
-  // WHY: When deleting active conversation, we need to know what to switch to
+  const aiTypingTimeoutRef = useRef(null);
   const conversationsRef = useRef([]);
 
   const { user, logout } = useAuth();
@@ -136,6 +140,8 @@ const Chat = () => {
     socket.on('disconnect', (reason) => {
       setConnected(false);
       setOperatorTyping(false);
+      setAiTyping(false);
+      setStreamingMessage(null);
       if (reason === 'io server disconnect' || reason === 'transport close') {
         setServerOnline(false);
       }
@@ -157,6 +163,7 @@ const Chat = () => {
       setConnected(false);
       setServerOnline(false);
       setOperatorTyping(false);
+      setAiTyping(false);
     });
 
     socket.on('conversation_info', ({ conversationId }) => {
@@ -167,11 +174,13 @@ const Chat = () => {
       }
     });
 
+    // ── Human Operator message receive ──
     socket.on('receive_message', (message) => {
       setOperatorTyping(false);
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
+      setAiTyping(false);
+      setStreamingMessage(null);
+
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
       if (message.conversationId === activeConvRef.current) {
         setMessages(prev => [...prev, message]);
@@ -183,6 +192,79 @@ const Chat = () => {
             : conv
         )
       );
+    });
+
+    // ══════════════════════════════════════════════════════
+    //  ⭐ NEW: AI STREAMING LISTENERS
+    // ══════════════════════════════════════════════════════
+
+    // 1. AI is thinking / generating
+    socket.on('ai_typing', ({ conversationId, isTyping }) => {
+      if (conversationId === activeConvRef.current) {
+        setAiTyping(isTyping);
+        if (isTyping) {
+          if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
+          aiTypingTimeoutRef.current = setTimeout(() => setAiTyping(false), 8000);
+        }
+      }
+    });
+
+    // 2. Real-time token streaming
+    socket.on('ai_message_chunk', ({ conversationId, content, fullText }) => {
+      if (conversationId === activeConvRef.current) {
+        setAiTyping(false);
+        setStreamingMessage({
+          conversationId,
+          sender: 'operator',
+          senderName: 'Support Assistant',
+          content: fullText,
+          isAI: true,
+          isStreaming: true,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+
+    // 3. AI finished generating
+    socket.on('ai_message_complete', ({ conversationId, messageId, fullText, sources }) => {
+      if (conversationId === activeConvRef.current) {
+        setAiTyping(false);
+        setStreamingMessage(null);
+
+        // Add finalized message to history
+        setMessages(prev => {
+          const alreadyExists = prev.some(m => m._id === messageId);
+          if (alreadyExists) return prev;
+
+          return [...prev, {
+            _id: messageId,
+            conversationId,
+            sender: 'operator',
+            senderName: 'Support Assistant',
+            content: fullText,
+            status: 'delivered',
+            isAI: true,
+            aiSources: sources || [],
+            timestamp: new Date().toISOString()
+          }];
+        });
+      }
+
+      setConversations(prev =>
+        prev.map(conv =>
+          conv._id === conversationId
+            ? { ...conv, lastMessage: fullText, lastMessageAt: new Date().toISOString() }
+            : conv
+        )
+      );
+    });
+
+    // 4. AI error
+    socket.on('ai_message_error', ({ conversationId, error }) => {
+      if (conversationId === activeConvRef.current) {
+        setAiTyping(false);
+        setStreamingMessage(null);
+      }
     });
 
     socket.on('message_confirmed', (confirmedMessage) => {
@@ -249,26 +331,14 @@ const Chat = () => {
     socket.on('operator_typing', ({ isTyping }) => {
       setOperatorTyping(isTyping);
       if (isTyping) {
-        if (typingTimeoutRef.current) {
-          clearTimeout(typingTimeoutRef.current);
-        }
-        typingTimeoutRef.current = setTimeout(() => {
-          setOperatorTyping(false);
-        }, 4000);
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = setTimeout(() => setOperatorTyping(false), 4000);
       } else {
-        if (typingTimeoutRef.current) {
-          clearTimeout(typingTimeoutRef.current);
-        }
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       }
     });
 
-    // ══════════════════════════════════════════════════════
-    //  NEW: MESSAGE DELETED EVENT
-    // ══════════════════════════════════════════════════════
-    // WHY: When someone (user's other tab, or operator) deletes a message,
-    //      update this message in state to show the "deleted" placeholder
     socket.on('message_deleted', ({ messageId, deletedBy, deletedAt, deletedByName }) => {
-      console.log(`🗑️ Message ${messageId} was deleted by ${deletedBy}`);
       setMessages(prev =>
         prev.map(msg =>
           msg._id === messageId
@@ -285,17 +355,9 @@ const Chat = () => {
       );
     });
 
-    // ══════════════════════════════════════════════════════
-    //  NEW: CONVERSATION DELETED EVENT
-    // ══════════════════════════════════════════════════════
-    // WHY: Sync deletion across user's own tabs
-    //      If another tab deleted a conversation, remove it here too
     socket.on('conversation_deleted', ({ conversationId }) => {
-      console.log(`🗑️ Conversation ${conversationId} was deleted`);
-
       setConversations(prev => prev.filter(c => c._id !== conversationId));
 
-      // If we were viewing the deleted conversation
       if (activeConvRef.current === conversationId) {
         const remaining = conversationsRef.current.filter(c => c._id !== conversationId);
         if (remaining.length > 0) {
@@ -314,9 +376,8 @@ const Chat = () => {
     loadConversations();
 
     return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (aiTypingTimeoutRef.current) clearTimeout(aiTypingTimeoutRef.current);
       disconnectSocket();
     };
   }, [user, navigate, loadConversations, loadMessages, processMessageQueue]);
@@ -324,6 +385,8 @@ const Chat = () => {
   useEffect(() => {
     if (activeConversation) {
       setOperatorTyping(false);
+      setAiTyping(false);
+      setStreamingMessage(null);
       loadMessages(activeConversation);
       const socket = getSocket();
       if (socket?.connected) {
@@ -358,7 +421,6 @@ const Chat = () => {
         tempId
       });
     } else {
-      console.log('📦 Server offline - message queued');
       addToQueue(pendingMessage);
     }
   };
@@ -374,6 +436,7 @@ const Chat = () => {
       setConversations(prev => [data, ...prev]);
       setActiveConversation(data._id);
       setMessages([]);
+      setStreamingMessage(null);
     } catch (error) {
       console.error('Error creating new chat:', error);
     }
@@ -383,11 +446,6 @@ const Chat = () => {
     setActiveConversation(conversationId);
   };
 
-  // ══════════════════════════════════════════════════════
-  //  NEW: DELETE MESSAGE HANDLER
-  // ══════════════════════════════════════════════════════
-  // WHY: Sends WebSocket event to backend to soft-delete the message
-  //      Backend will broadcast to all tabs + operators
   const handleDeleteMessage = (messageId) => {
     const confirmed = window.confirm('Delete this message?');
     if (!confirmed) return;
@@ -400,11 +458,6 @@ const Chat = () => {
     }
   };
 
-  // ══════════════════════════════════════════════════════
-  //  NEW: DELETE CONVERSATION HANDLER
-  // ══════════════════════════════════════════════════════
-  // WHY: Uses REST API (DELETE endpoint) to hard-delete the conversation
-  //      and all its messages, then notifies operators via socket
   const handleDeleteConversation = async (conversationId) => {
     const confirmed = window.confirm(
       'Delete this entire chat?\n\nAll messages will be permanently removed. This cannot be undone.'
@@ -412,13 +465,9 @@ const Chat = () => {
     if (!confirmed) return;
 
     try {
-      // Call REST API to delete
       await api.delete(`/messages/conversations/${conversationId}`);
-
-      // Remove from local list
       setConversations(prev => prev.filter(c => c._id !== conversationId));
 
-      // If it was the active conversation, switch to another
       if (activeConversation === conversationId) {
         const remaining = conversations.filter(c => c._id !== conversationId);
         if (remaining.length > 0) {
@@ -429,16 +478,12 @@ const Chat = () => {
         }
       }
 
-      // Notify operators via socket so dashboards refresh
       const socket = getSocket();
       if (socket?.connected) {
         socket.emit('conversation_deleted_notify', { conversationId });
       }
-
-      console.log(`✅ Deleted conversation: ${conversationId}`);
     } catch (err) {
-      console.error('Delete conversation error:', err);
-      alert('Failed to delete conversation. Please try again.');
+      alert('Failed to delete conversation.');
     }
   };
 
@@ -469,13 +514,18 @@ const Chat = () => {
             <div className="chat-header-left">
               <h2>🤖 {activeConvTitle}</h2>
 
-              {operatorTyping ? (
+              {aiTyping ? (
+                <span className="operator-typing-header" style={{ color: '#8b5cf6' }}>
+                  AI is searching knowledge base...
+                  <span className="header-typing-dots">
+                    <span></span><span></span><span></span>
+                  </span>
+                </span>
+              ) : operatorTyping ? (
                 <span className="operator-typing-header">
                   Operator is typing
                   <span className="header-typing-dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
+                    <span></span><span></span><span></span>
                   </span>
                 </span>
               ) : (
@@ -494,16 +544,15 @@ const Chat = () => {
               <strong>Server is offline</strong>
               <span>Messages will be sent when connection is restored</span>
             </div>
-            <div className="offline-dot-animation">
-              <span></span><span></span><span></span>
-            </div>
           </div>
         )}
 
         <MessageList
           messages={messages}
+          streamingMessage={streamingMessage}
           isDarkMode={isDarkMode}
           operatorTyping={operatorTyping}
+          aiTyping={aiTyping}
           currentUsername={user?.username}
           onDeleteMessage={handleDeleteMessage}
         />
